@@ -1,15 +1,17 @@
 # Telegram ↔ существующий dot: локальный тестовый стенд
 
-**Статус: offline mock плюс минимальный live Telegram ingress; подключение к dot ещё отсутствует.** В стенде нет отдельной LLM, OpenAI API, API-биллинга, OAuth, публичного MCP-сервера или голосового канала. Live worker включается только явной конфигурацией, принимает сообщения одного заранее заданного владельца и отвечает лишь на `/start` и `/status`.
+**Статус: live Telegram ingress работает; защищённый MCP/Events сервер реализован, но ещё не включён и не подключён к dot.** В стенде нет отдельной LLM, OpenAI API-биллинга или голосового канала. Live worker принимает сообщения одного заранее заданного владельца.
 
 Цель следующего этапа — текстовый путь `Telegram → bridge → MCP Events → этот существующий dot → reply tool → Telegram`, а не новый агент с другим контекстом. MCP Events — документированный кандидат для событий в подписанном чате dot; это не доказательство готового нативного Telegram-канала. Реальный end-to-end ещё не проверен.
 
 ## Быстрый запуск без секретов
 
-Нужен Python 3.12+; только стандартная библиотека, `pip install` не нужен.
+Нужен Python 3.12+. Для полного набора тестов установите зависимости из
+`requirements.txt`; offline demo по-прежнему не делает сетевых запросов.
 
 ```sh
 cd telegram-dot-stand
+python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s tests -v
 python3 -m stand demo
 ```
@@ -66,25 +68,22 @@ deploy job выключен переменной `DEPLOY_ENABLED`.
 - Раздельная allowlist `from.id` и private `chat.id`, строгие числовые типы; группы, боты, edits, channel/business posts, via-bot и forwards отклоняются.
 - SQLite-транзакция сохраняет принятый update вместе с opaque `message_ref` и стабильным `event_id`. Дубликаты после рестарта и updates вне порядка безопасны. Отклонённые updates не сохраняются; polling offset здесь отсутствует.
 - Текст хранится как **untrusted data**; команды/URL не исполняются. Пересланные сообщения пока полностью отвергаются. В event preview только opaque ref, без текста; `read_message` возвращает текст явно как untrusted.
-- `reply_to_message(message_ref, text, idempotency_key)` проверяет mock principal/read–reply scopes; recipient берётся из сохранённого inbox. Передать произвольный `chat_id` нельзя. Дубликат ответа подавляется, повтор ключа с другим содержимым — ошибка. Единственный статус ответа: `dry_run_not_sent`.
+- Live tool `reply_to_telegram_message(message_ref, text, idempotency_key)` проверяет Auth0 principal/scopes; recipient берётся из сохранённого inbox. Передать произвольный `chat_id` нельзя. Дубликат подавляется, конфликт ключа отклоняется, неопределённая отправка не повторяется вслепую.
 - Фиктивный `MockPrincipal` проверяет scope/expiry/confirmed для unit-тестов. Это **не проверенная identity mapping и не OAuth**. Смена owner IDs на уже существующей БД запрещена.
 - У БД права `0600`, у каталога `0700`; симлинки запрещены. Локальные исходные тексты в БД не зашифрованы; это fixture storage, не безопасное хранилище production.
 - Offline-команды не имеют outbound HTTP-клиента. Отдельный live worker обращается только к фиксированным методам Telegram Bot API; произвольные callbacks по-прежнему запрещены.
 - Логи содержат только allowlist статусов/opaque refs, не тексты, chat/user IDs, токены, URL. Добавлен redactor как дополнительная защита, не замена запрету логирования секретов.
-- `mcp_contract.py` содержит только локальные fixtures `server/discover`, `events/list` и отказ subscription. **Это не полноценный MCP 2.0 endpoint.** Нет подписки, подписи HMAC, challenge, доставки, retry, refresh, replay или unsubscribe. Event `cursor=null`; replay не заявлен.
+- `stand/mcp_live.py` реализует stateless MCP `2026-07-28`, Auth0 JWT verification, exact owner `sub`, tools и Events lifecycle. Подписки/очередь устойчивы в SQLite; callback проходит HTTPS/DNS/TLS pinning, challenge и Standard Webhooks; transient failures имеют bounded retry, 410/413 не повторяются. Event `cursor=null`; replay не заявлен.
+- Caddy публикует `https://jarvis.akalmaz.tech/mcp` и автоматически получает TLS-сертификат. MCP/Caddy запускаются отдельным compose profile только при наличии `AUTH0_OWNER_SUB` в GitHub Environment.
 
 Статусы не смешиваются: `local_inbox_only`, `event_preview_not_delivered`, `dry_run_not_sent` не означают `event accepted`, `dot processed` или `Telegram confirmed`.
 
-## Что нужно до реального теста — отдельно и с разрешением
+## Что осталось до реального теста
 
-1. Выбрать отдельный coding chat/repo/server/environment, доступный пользователю; перенести проверенный стенд. Ничего не опубликовано и никакой repository здесь не создан.
-2. Получить явное разрешение создать Telegram-бота и безопасно подключить его token через secret store. Не отправлять token в переписку и не коммитить `.env`/БД.
-3. Реализовать и проверить OAuth 2.1 + PKCE для MCP с issuer/audience/expiry/scopes и привязкой resource. Выполнить двухстороннюю, ограниченную по времени привязку подтверждённого principal к numeric `from.id` и private `chat.id`; подтвердить её в исходном чате dot. Username, forward_origin, локальная переменная и possession bot token не доказывают owner identity.
-4. Для первого live-этапа выбран только `getUpdates`: update сохраняется до продвижения offset. Telegram webhook одновременно использовать нельзя.
-5. Реализовать MCP 2.0, протокол `2026-07-28`, authenticated tools и Events lifecycle по официальной документации. Перед callbacks нужны HTTPS, запрет redirects и private/local/special IP, проверка DNS в момент подключения с фиксацией проверенного адреса и TLS hostname; до этого сетевой транспорт должен оставаться запрещённым.
-6. Проверить callback challenge и Standard Webhooks подпись точных body bytes; безопасно хранить/ротировать subscription secret, корректно обрабатывать expiry/revocation/retry/idempotency и ограничения размера. `2xx` callback означает только приём, не завершённый ответ dot.
-7. После явного разрешения подключить custom MCP plugin в существующий dot и создать подписку с узкой инструкцией. Первый тест — только эхо несекретного nonce; Telegram-текст не должен разрешать доступ к файлам, почте, платежам или расширение прав. Проверить всю цепочку до подтверждённого Telegram reply, остановку подписки и отсутствие feedback loops.
-8. Голос рассматривать только после подтверждения текстового E2E. Отдельное WebRTC/Realtime API приложение само по себе создаёт другой агентный путь, а не голосовой канал этого dot; голос и звонки здесь не реализованы.
+1. Создать/выбрать ровно одного Auth0 пользователя-владельца и добавить его точный `user_id` (`sub`) как production secret `AUTH0_OWNER_SUB`. Первый вошедший пользователь автоматически владельцем не становится.
+2. После успешного deploy проверить public metadata/health и подключить `https://jarvis.akalmaz.tech/mcp` как custom plugin к нужному dot.
+3. Создать одну Events-подписку с узкой инструкцией и выполнить тест несекретным nonce: Telegram → event → этот dot → reply tool → тот же Telegram chat.
+4. После подтверждения roundtrip проверить unsubscribe/reconnect/retry. Голос рассматривать только после текстового E2E; Telegram Bot API не принимает обычные звонки.
 
 ## Источники и границы исследования
 
@@ -95,8 +94,8 @@ deploy job выключен переменной `DEPLOY_ENABLED`.
 - [Подключение custom plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt) и [Security & privacy](https://developers.openai.com/plugins/guides/security-privacy).
 - [Telegram getUpdates](https://core.telegram.org/bots/api#getupdates), [setWebhook](https://core.telegram.org/bots/api#setwebhook), [sendMessage](https://core.telegram.org/bots/api#sendmessage), [deep linking](https://core.telegram.org/bots/features#deep-linking).
 
-Реализация на Python выбрана для проверяемости: стенд использует только стандартную библиотеку и проверен на Python 3.12.14. Go scaffold без запуска тестов был бы менее полезен. Внешние Python-зависимости и дополнительный toolchain не устанавливались.
+Реализация на Python 3.12 использует Starlette/Uvicorn, PyJWT и cryptography для live MCP слоя; версии зафиксированы в `requirements.txt`.
 
 ## Файлы
 
-`stand/core.py` — inbox, фильтры, mock authorization, dry reply, запрет сети. `stand/__main__.py` — demo/JSONL/loopback harness. `stand/mcp_contract.py` — offline fixtures. `tests/test_stand.py` — проверки. `env.example` — только синтетические значения. `VERIFICATION.md` — точные результаты запусков.
+`stand/core.py` — inbox и фильтры. `stand/telegram_live.py` — Telegram transport. `stand/mcp_live.py` — Auth0/MCP/tools/events. `compose.yaml` и `Caddyfile` — live deployment. `tests/` — offline проверки. `VERIFICATION.md` — результаты запусков.

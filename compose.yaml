@@ -20,3 +20,55 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+    command: ["python", "-m", "stand.mcp_live"]
+    restart: unless-stopped
+    user: "${JARVIS_UID}:${JARVIS_GID}"
+    env_file:
+      - .env
+    environment:
+      STAND_STATE_PATH: /var/lib/jarvis/stand.sqlite3
+      AUTH0_DOMAIN: dev-r2teiaizenxdglem.us.auth0.com
+      AUTH0_AUDIENCE: https://jarvis.akalmaz.tech
+      MCP_PUBLIC_URL: https://jarvis.akalmaz.tech
+    volumes:
+      - "${JARVIS_STATE_DIR}:/var/lib/jarvis"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    profiles: ["mcp"]
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    depends_on:
+      - mcp
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -26,6 +27,7 @@ SENSITIVE_ENV = (
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_API_BASE",
     "MCP_CALLBACK_URL", "MCP_CALLBACK_SECRET", "MCP_DESTINATION_URL",
     "MCP_ACCESS_TOKEN", "MCP_REFRESH_TOKEN", "OAUTH_CLIENT_SECRET", "OPENAI_API_KEY",
+    "AUTH0_OWNER_SUB",
 )
 MOCK_PRINCIPAL = "offline-fixture-owner"
 MAX_UPDATE_BYTES = 64 * 1024
@@ -119,9 +121,14 @@ class Stand:
                 raise StandError("state_file_must_be_private")
         finally:
             os.close(fd)
-        self.db = sqlite3.connect(path, timeout=5)
+        # The MCP HTTP server and its durable delivery worker share this one
+        # connection inside a process; callers serialize access with this lock.
+        self.db_lock = threading.RLock()
+        self.db = sqlite3.connect(path, timeout=5, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
+        self.db.execute("PRAGMA journal_mode = WAL")
+        self.db.execute("PRAGMA busy_timeout = 5000")
         self.db.execute("PRAGMA synchronous = FULL")
         try:
             self.db.executescript("""

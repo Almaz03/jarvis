@@ -5,14 +5,15 @@
 
 ## Результаты
 
-- `python3 -m unittest discover -s tests -v`: **28/28 PASS**.
+- `python3 -m unittest discover -s tests -v`: **34/34 PASS**.
 - `python3 -m compileall -q stand tests`: **PASS**.
 - `python3 -m stand demo`: **PASS**; финальный статус:
   `{"result":"offline_only","network_calls":0,"dot_connected":false}`.
-- `docker build -t telegram-dot-stand:local .`: **PASS**.
+- `docker build -t jarvis:test .`: **PASS**.
 - Контейнерный demo с `--network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m`: **PASS** с тем же финальным статусом `offline_only`.
-- `docker compose config` с синтетическим env: **PASS**.
-- Unit-тесты внутри Compose service: **28/28 PASS**.
+- `docker compose --profile mcp config` с синтетическим env: **PASS**.
+- `caddy validate` для `Caddyfile`: **PASS**.
+- Unit-тесты внутри read-only Docker image без сети: **34/34 PASS**.
 
 ## Найденное и исправленное
 
@@ -21,9 +22,10 @@
 ## Что не проверено
 
 - Реальный Telegram Bot API; long polling проверен только через fake transport.
-- OAuth 2.1 и подтверждённая привязка владельца.
-- Полный MCP 2.0 endpoint, Events subscription/callback и Standard Webhooks.
+- Реальный Auth0 login/token через ChatGPT и live JWKS verification.
+- Реальный callback challenge и доставка MCP Event в ChatGPT.
 - Доставка события существующему dot и обратный ответ в Telegram.
 - Голосовые сообщения и звонки.
 
-Стенд остаётся credential-free offline mock и не доказывает рабочий end-to-end канал.
+Тесты live-границ используют локальные ключи/fake transports и не доказывают
+рабочий end-to-end канал.

@@ -1,6 +1,14 @@
-# Local offline demo only. Build requires access to the base image registry.
+# syntax=docker/dockerfile:1
+# The same image runs the offline tests and the explicitly enabled live services.
 FROM python:3.12-slim
 WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN --mount=type=secret,id=proxy_ca,required=false \
+    if [ -f /run/secrets/proxy_ca ]; then \
+      PIP_CERT=/run/secrets/proxy_ca pip install --no-cache-dir -r /app/requirements.txt; \
+    else \
+      pip install --no-cache-dir -r /app/requirements.txt; \
+    fi
 COPY stand /app/stand
 COPY tests /app/tests
 COPY fixtures /app/fixtures

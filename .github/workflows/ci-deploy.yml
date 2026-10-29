@@ -43,6 +43,7 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
       TELEGRAM_OWNER_CHAT_ID: ${{ secrets.TELEGRAM_OWNER_CHAT_ID }}
+      AUTH0_OWNER_SUB: ${{ secrets.AUTH0_OWNER_SUB }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -76,12 +77,18 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          tar -czf jarvis-release.tgz Dockerfile compose.yaml .dockerignore .gitignore stand tests fixtures README.md VERIFICATION.md
+          tar -czf jarvis-release.tgz Dockerfile Caddyfile requirements.txt compose.yaml .dockerignore .gitignore stand tests fixtures README.md VERIFICATION.md
           {
             printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
             printf 'TELEGRAM_OWNER_USER_ID=%s\n' "$TELEGRAM_OWNER_USER_ID"
             printf 'TELEGRAM_OWNER_CHAT_ID=%s\n' "$TELEGRAM_OWNER_CHAT_ID"
             printf 'TELEGRAM_POLL_TIMEOUT=50\n'
+            if [ -n "$AUTH0_OWNER_SUB" ]; then
+              printf 'AUTH0_OWNER_SUB=%s\n' "$AUTH0_OWNER_SUB"
+              printf 'MCP_ENABLED=true\n'
+            else
+              printf 'MCP_ENABLED=false\n'
+            fi
           } > jarvis-deploy.env
       - name: Upload release
         shell: bash
@@ -111,16 +118,20 @@ jobs:
             printf 'JARVIS_STATE_DIR=%s\n' "$state"
           } >> "$release/.env"
           cd "$release"
-          docker compose --project-name jarvis --env-file .env build
+          compose=(docker compose --project-name jarvis --env-file .env)
+          if grep -qx 'MCP_ENABLED=true' .env; then
+            compose+=(--profile mcp)
+          fi
+          "${compose[@]}" build
           # Do not let the test container inherit this SSH heredoc as stdin.
           # Compose otherwise consumes the remaining deployment commands and the
           # remote shell exits successfully immediately after the tests.
-          docker compose --project-name jarvis --env-file .env run --rm --no-TTY telegram \
+          "${compose[@]}" run --rm --no-TTY telegram \
             python -m unittest discover -s tests -v </dev/null
           ln -sfn "$release" "$root/current.next"
           mv -Tf "$root/current.next" "$root/current"
           cd "$root/current"
-          docker compose --project-name jarvis --env-file .env up -d --remove-orphans
+          "${compose[@]}" up -d --remove-orphans
           worker_ready=false
           for _attempt in 1 2 3 4 5 6 7 8 9 10; do
             sleep 2
@@ -136,6 +147,22 @@ jobs:
             docker compose --project-name jarvis --env-file .env ps
             docker compose --project-name jarvis --env-file .env logs --tail=100 --no-color telegram
             exit 1
+          fi
+          if grep -qx 'MCP_ENABLED=true' .env; then
+            mcp_ready=false
+            for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+              sleep 2
+              if curl --fail --silent --show-error --max-time 5 \
+                  https://jarvis.akalmaz.tech/health | grep -Fq '"mcp":true'; then
+                mcp_ready=true
+                break
+              fi
+            done
+            if [ "$mcp_ready" != true ]; then
+              "${compose[@]}" ps
+              "${compose[@]}" logs --tail=100 --no-color mcp caddy
+              exit 1
+            fi
           fi
           rm -f "$HOME/jarvis-release.tgz" "$HOME/jarvis-deploy.env"
           REMOTE

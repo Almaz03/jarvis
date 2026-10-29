@@ -18,6 +18,9 @@ smoke-test. Deployment выполняется только если repository v
 - `TELEGRAM_BOT_TOKEN` — токен нового бота от BotFather.
 - `TELEGRAM_OWNER_USER_ID` — numeric Telegram user ID владельца.
 - `TELEGRAM_OWNER_CHAT_ID` — numeric ID личного чата владельца.
+- `AUTH0_OWNER_SUB` — точный Auth0 `user_id` единственного владельца, например
+  `auth0|...`. Пока secret отсутствует, MCP/Caddy profile не запускается и
+  существующий Telegram ingress продолжает работать.
 
 Ни одно значение не отправляйте в чат и не добавляйте в Git.
 
@@ -30,12 +33,14 @@ smoke-test. Deployment выполняется только если repository v
 - Linux с Docker Engine и Compose plugin.
 - Deploy-пользователь может запускать `docker compose`.
 - Его public SSH key находится в `~/.ssh/authorized_keys`.
-- Исходящие HTTPS-соединения к `api.telegram.org` разрешены.
+- Исходящие HTTPS-соединения к `api.telegram.org`, Auth0 JWKS и callback ChatGPT разрешены.
+- Входящие TCP 80/443 разрешены; DNS `jarvis.akalmaz.tech` указывает на VPS.
 
 Workflow устанавливает release в `~/jarvis/releases/<git-sha>`, хранит
 секретный `.env` с правами `0600`, а SQLite state — в `~/jarvis/state`.
-Контейнер запускается без root, с read-only filesystem, без открытых портов и
-без дополнительных Linux capabilities.
+Telegram/MCP контейнеры запускаются без root и с read-only filesystem. Только
+Caddy публикует 80/443 и имеет capability `NET_BIND_SERVICE`; TLS state хранится
+в named volumes.
 
 ## Текущий live scope
 
@@ -43,5 +48,5 @@ Worker использует Telegram `getUpdates`, принимает тольк
 заданного личного чата владельца и отвечает на `/start` и `/status`.
 Остальные сообщения сохраняются в durable inbox для следующего этапа.
 
-Это ещё не ответ существующего dot. MCP OAuth, Events subscription/callback и
-`reply_to_message` live transport будут добавлены отдельным этапом.
+Это ещё не доказывает ответ существующего dot. После включения MCP нужно отдельно
+подключить endpoint к нужному dot, создать подписку и подтвердить сквозной nonce.

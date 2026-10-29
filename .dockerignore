@@ -1,5 +1,6 @@
 **
 !Dockerfile
+!requirements.txt
 !stand/
 !stand/*.py
 !tests/
