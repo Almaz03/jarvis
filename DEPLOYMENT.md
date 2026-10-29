@@ -34,13 +34,12 @@ smoke-test. Deployment выполняется только если repository v
 - Deploy-пользователь может запускать `docker compose`.
 - Его public SSH key находится в `~/.ssh/authorized_keys`.
 - Исходящие HTTPS-соединения к `api.telegram.org`, Auth0 JWKS и callback ChatGPT разрешены.
-- Входящий TCP/UDP 443 разрешён; DNS `jarvis.akalmaz.tech` указывает на VPS.
-  Порт 80 может обслуживаться существующим системным redirect-сервисом.
+- Входящие TCP 80/443 и UDP 443 разрешены; DNS `jarvis.akalmaz.tech` указывает на VPS.
 
 Workflow устанавливает release в `~/jarvis/releases/<git-sha>`, хранит
 секретный `.env` с правами `0600`, а SQLite state — в `~/jarvis/state`.
 Telegram/MCP контейнеры запускаются без root и с read-only filesystem. Только
-Caddy публикует 443 и имеет capability `NET_BIND_SERVICE`; TLS state хранится
+Caddy публикует 80/443 и имеет capability `NET_BIND_SERVICE`; TLS state хранится
 в named volumes.
 
 ## Текущий live scope
