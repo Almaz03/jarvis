@@ -1,6 +1,6 @@
 # Telegram ↔ существующий dot: локальный тестовый стенд
 
-**Статус: credential-free mock, НЕ подключение к Telegram или dot.** В стенде нет отдельной LLM, OpenAI API, API-биллинга, OAuth, bot token, регистрации бота, публичного сервера или голосового канала. Реальные сообщения не отправляются. Live-режим отсутствует и отклоняется, даже если попытаться включить его переменной окружения.
+**Статус: offline mock плюс минимальный live Telegram ingress; подключение к dot ещё отсутствует.** В стенде нет отдельной LLM, OpenAI API, API-биллинга, OAuth, публичного MCP-сервера или голосового канала. Live worker включается только явной конфигурацией, принимает сообщения одного заранее заданного владельца и отвечает лишь на `/start` и `/status`.
 
 Цель следующего этапа — текстовый путь `Telegram → bridge → MCP Events → этот существующий dot → reply tool → Telegram`, а не новый агент с другим контекстом. MCP Events — документированный кандидат для событий в подписанном чате dot; это не доказательство готового нативного Telegram-канала. Реальный end-to-end ещё не проверен.
 
@@ -51,6 +51,16 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16
 
 Образ не имеет опубликованных портов и запускает только offline demo. Docker build требует скачивания базового образа. В целевом cloud-окружении сборка и запуск с `--network none --read-only` проверены; точные результаты записаны в `VERIFICATION.md`.
 
+## Live Telegram ingress и CI/CD
+
+Live worker использует `getUpdates` и фиксированный официальный endpoint
+`api.telegram.org`. Он не принимает произвольный API base URL и не логирует
+token, Telegram IDs или текст сообщений.
+
+Deployment выполняет [GitHub Actions workflow](.github/workflows/ci-deploy.yml);
+настройка secrets и VPS описана в [DEPLOYMENT.md](DEPLOYMENT.md). По умолчанию
+deploy job выключен переменной `DEPLOY_ENABLED`.
+
 ## Что реально реализовано
 
 - Раздельная allowlist `from.id` и private `chat.id`, строгие числовые типы; группы, боты, edits, channel/business posts, via-bot и forwards отклоняются.
@@ -59,7 +69,7 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16
 - `reply_to_message(message_ref, text, idempotency_key)` проверяет mock principal/read–reply scopes; recipient берётся из сохранённого inbox. Передать произвольный `chat_id` нельзя. Дубликат ответа подавляется, повтор ключа с другим содержимым — ошибка. Единственный статус ответа: `dry_run_not_sent`.
 - Фиктивный `MockPrincipal` проверяет scope/expiry/confirmed для unit-тестов. Это **не проверенная identity mapping и не OAuth**. Смена owner IDs на уже существующей БД запрещена.
 - У БД права `0600`, у каталога `0700`; симлинки запрещены. Локальные исходные тексты в БД не зашифрованы; это fixture storage, не безопасное хранилище production.
-- Нет outbound HTTP-клиента: любые callbacks, в том числе публичные, запрещены. Это fail-closed заглушка, не реализованная SSRF-защита для live.
+- Offline-команды не имеют outbound HTTP-клиента. Отдельный live worker обращается только к фиксированным методам Telegram Bot API; произвольные callbacks по-прежнему запрещены.
 - Логи содержат только allowlist статусов/opaque refs, не тексты, chat/user IDs, токены, URL. Добавлен redactor как дополнительная защита, не замена запрету логирования секретов.
 - `mcp_contract.py` содержит только локальные fixtures `server/discover`, `events/list` и отказ subscription. **Это не полноценный MCP 2.0 endpoint.** Нет подписки, подписи HMAC, challenge, доставки, retry, refresh, replay или unsubscribe. Event `cursor=null`; replay не заявлен.
 
@@ -70,7 +80,7 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16
 1. Выбрать отдельный coding chat/repo/server/environment, доступный пользователю; перенести проверенный стенд. Ничего не опубликовано и никакой repository здесь не создан.
 2. Получить явное разрешение создать Telegram-бота и безопасно подключить его token через secret store. Не отправлять token в переписку и не коммитить `.env`/БД.
 3. Реализовать и проверить OAuth 2.1 + PKCE для MCP с issuer/audience/expiry/scopes и привязкой resource. Выполнить двухстороннюю, ограниченную по времени привязку подтверждённого principal к numeric `from.id` и private `chat.id`; подтвердить её в исходном чате dot. Username, forward_origin, локальная переменная и possession bot token не доказывают owner identity.
-4. Выбрать только один Telegram ingress: getUpdates **или** webhook. Для getUpdates сохранять update до продвижения offset; Telegram хранит pending updates не дольше 24 часов. Для webhook отдельно проверять `X-Telegram-Bot-Api-Secret-Token`; это не подпись MCP Events.
+4. Для первого live-этапа выбран только `getUpdates`: update сохраняется до продвижения offset. Telegram webhook одновременно использовать нельзя.
 5. Реализовать MCP 2.0, протокол `2026-07-28`, authenticated tools и Events lifecycle по официальной документации. Перед callbacks нужны HTTPS, запрет redirects и private/local/special IP, проверка DNS в момент подключения с фиксацией проверенного адреса и TLS hostname; до этого сетевой транспорт должен оставаться запрещённым.
 6. Проверить callback challenge и Standard Webhooks подпись точных body bytes; безопасно хранить/ротировать subscription secret, корректно обрабатывать expiry/revocation/retry/idempotency и ограничения размера. `2xx` callback означает только приём, не завершённый ответ dot.
 7. После явного разрешения подключить custom MCP plugin в существующий dot и создать подписку с узкой инструкцией. Первый тест — только эхо несекретного nonce; Telegram-текст не должен разрешать доступ к файлам, почте, платежам или расширение прав. Проверить всю цепочку до подтверждённого Telegram reply, остановку подписки и отсутствие feedback loops.

@@ -1,0 +1,22 @@
+services:
+  telegram:
+    build:
+      context: .
+    command: ["python", "-m", "stand", "telegram-poll"]
+    restart: unless-stopped
+    user: "${JARVIS_UID}:${JARVIS_GID}"
+    env_file:
+      - .env
+    environment:
+      STAND_MODE: telegram
+      STAND_ENABLE_LIVE: "true"
+      STAND_STATE_PATH: /var/lib/jarvis/stand.sqlite3
+    volumes:
+      - "${JARVIS_STATE_DIR}:/var/lib/jarvis"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

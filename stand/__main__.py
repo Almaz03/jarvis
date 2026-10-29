@@ -1,4 +1,4 @@
-"""Run with python -m stand demo|ingest|serve. No mode enables live transport."""
+"""Run the offline harness or the explicit Telegram long-polling worker."""
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -95,9 +95,15 @@ def handler_for(stand):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("demo", "ingest", "serve"))
+    parser.add_argument("command", choices=("demo", "ingest", "serve", "telegram-poll"))
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
+    if args.command == "telegram-poll":
+        from .telegram_live import TelegramClient, TelegramLiveConfig, TelegramWorker
+        live_config = TelegramLiveConfig.from_env()
+        with Stand(live_config.stand_config()) as stand:
+            TelegramWorker(live_config, stand, TelegramClient(live_config.token), emit=emit).run_forever()
+        return
     # Demo does not consume real identities or credentials. Reject credentials even here.
     if args.command == "demo":
         from .core import SENSITIVE_ENV

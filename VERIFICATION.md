@@ -5,12 +5,14 @@
 
 ## Результаты
 
-- `python3 -m unittest discover -s tests -v`: **24/24 PASS**.
+- `python3 -m unittest discover -s tests -v`: **28/28 PASS**.
 - `python3 -m compileall -q stand tests`: **PASS**.
 - `python3 -m stand demo`: **PASS**; финальный статус:
   `{"result":"offline_only","network_calls":0,"dot_connected":false}`.
 - `docker build -t telegram-dot-stand:local .`: **PASS**.
 - Контейнерный demo с `--network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m`: **PASS** с тем же финальным статусом `offline_only`.
+- `docker compose config` с синтетическим env: **PASS**.
+- Unit-тесты внутри Compose service: **28/28 PASS**.
 
 ## Найденное и исправленное
 
@@ -18,7 +20,7 @@
 
 ## Что не проверено
 
-- Реальный Telegram Bot API и webhook.
+- Реальный Telegram Bot API; long polling проверен только через fake transport.
 - OAuth 2.1 и подтверждённая привязка владельца.
 - Полный MCP 2.0 endpoint, Events subscription/callback и Standard Webhooks.
 - Доставка события существующему dot и обратный ответ в Telegram.

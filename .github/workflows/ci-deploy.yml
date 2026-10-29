@@ -1,0 +1,123 @@
+name: CI and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jarvis-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Compile Python sources
+        run: python3 -m compileall -q stand tests
+      - name: Build offline image
+        run: docker build -t telegram-dot-stand:ci .
+      - name: Run offline image without network
+        run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:rw,noexec,nosuid,size=16m telegram-dot-stand:ci
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
+      TELEGRAM_OWNER_CHAT_ID: ${{ secrets.TELEGRAM_OWNER_CHAT_ID }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${VPS_PORT:=22}"
+          for name in VPS_HOST VPS_USER VPS_SSH_PRIVATE_KEY VPS_KNOWN_HOSTS TELEGRAM_BOT_TOKEN TELEGRAM_OWNER_USER_ID TELEGRAM_OWNER_CHAT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required production secret: $name"
+              exit 1
+            fi
+          done
+          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]]
+          [[ "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]]
+          [[ "$TELEGRAM_OWNER_USER_ID" =~ ^[1-9][0-9]{0,18}$ ]]
+          [[ "$TELEGRAM_OWNER_CHAT_ID" =~ ^[1-9][0-9]{0,18}$ ]]
+          echo "VPS_PORT=$VPS_PORT" >> "$GITHUB_ENV"
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 0600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+      - name: Package release
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          tar -czf jarvis-release.tgz Dockerfile compose.yaml .dockerignore .gitignore stand tests fixtures README.md VERIFICATION.md
+          {
+            printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
+            printf 'TELEGRAM_OWNER_USER_ID=%s\n' "$TELEGRAM_OWNER_USER_ID"
+            printf 'TELEGRAM_OWNER_CHAT_ID=%s\n' "$TELEGRAM_OWNER_CHAT_ID"
+            printf 'TELEGRAM_POLL_TIMEOUT=50\n'
+          } > jarvis-deploy.env
+      - name: Upload release
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${VPS_USER}@${VPS_HOST}"
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/id_ed25519" jarvis-release.tgz jarvis-deploy.env "${destination}:~/"
+      - name: Activate release
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${VPS_USER}@${VPS_HOST}"
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/id_ed25519" "$destination" "JARVIS_RELEASE_SHA='${GITHUB_SHA}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          [[ "$JARVIS_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          root="$HOME/jarvis"
+          release="$root/releases/$JARVIS_RELEASE_SHA"
+          state="$root/state"
+          install -d -m 0700 "$root" "$root/releases" "$state"
+          rm -rf "$release"
+          install -d -m 0700 "$release"
+          tar -xzf "$HOME/jarvis-release.tgz" -C "$release"
+          install -m 0600 "$HOME/jarvis-deploy.env" "$release/.env"
+          {
+            printf 'JARVIS_UID=%s\n' "$(id -u)"
+            printf 'JARVIS_GID=%s\n' "$(id -g)"
+            printf 'JARVIS_STATE_DIR=%s\n' "$state"
+          } >> "$release/.env"
+          cd "$release"
+          docker compose --project-name jarvis --env-file .env build
+          docker compose --project-name jarvis --env-file .env run --rm telegram python -m unittest discover -s tests -v
+          ln -sfn "$release" "$root/current.next"
+          mv -Tf "$root/current.next" "$root/current"
+          cd "$root/current"
+          docker compose --project-name jarvis --env-file .env up -d --remove-orphans
+          docker compose --project-name jarvis --env-file .env ps --status running --services |
+            grep -qx telegram
+          rm -f "$HOME/jarvis-release.tgz" "$HOME/jarvis-deploy.env"
+          REMOTE

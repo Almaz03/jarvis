@@ -40,7 +40,7 @@ class Config:
     enable_live: bool = False
 
     def validate(self) -> None:
-        if self.mode != "offline" or self.enable_live is not False:
+        if (self.mode, self.enable_live) not in {("offline", False), ("telegram", True)}:
             raise StandError("live_mode_not_implemented")
         if any(type(v) is not int or not 0 < v < 2**63 for v in (self.owner_user_id, self.owner_chat_id)):
             raise StandError("explicit_positive_owner_ids_required")
@@ -138,7 +138,7 @@ class Stand:
                 PRIMARY KEY(principal, idempotency_key));
             """)
             with self.db:
-                expected = {"schema": "1", "mode": "offline", "principal": MOCK_PRINCIPAL,
+                expected = {"schema": "1", "mode": config.mode, "principal": MOCK_PRINCIPAL,
                             "owner_user_id": str(config.owner_user_id), "owner_chat_id": str(config.owner_chat_id)}
                 for key, value in expected.items():
                     self.db.execute("INSERT OR IGNORE INTO meta VALUES (?,?)", (key, value))
