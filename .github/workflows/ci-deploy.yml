@@ -112,12 +112,30 @@ jobs:
           } >> "$release/.env"
           cd "$release"
           docker compose --project-name jarvis --env-file .env build
-          docker compose --project-name jarvis --env-file .env run --rm telegram python -m unittest discover -s tests -v
+          # Do not let the test container inherit this SSH heredoc as stdin.
+          # Compose otherwise consumes the remaining deployment commands and the
+          # remote shell exits successfully immediately after the tests.
+          docker compose --project-name jarvis --env-file .env run --rm --no-TTY telegram \
+            python -m unittest discover -s tests -v </dev/null
           ln -sfn "$release" "$root/current.next"
           mv -Tf "$root/current.next" "$root/current"
           cd "$root/current"
           docker compose --project-name jarvis --env-file .env up -d --remove-orphans
-          docker compose --project-name jarvis --env-file .env ps --status running --services |
-            grep -qx telegram
+          worker_ready=false
+          for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 2
+            if docker compose --project-name jarvis --env-file .env ps --status running --services |
+                grep -qx telegram &&
+              docker compose --project-name jarvis --env-file .env logs --no-color telegram |
+                grep -Fq '"status":"telegram_worker_started"'; then
+              worker_ready=true
+              break
+            fi
+          done
+          if [ "$worker_ready" != true ]; then
+            docker compose --project-name jarvis --env-file .env ps
+            docker compose --project-name jarvis --env-file .env logs --tail=100 --no-color telegram
+            exit 1
+          fi
           rm -f "$HOME/jarvis-release.tgz" "$HOME/jarvis-deploy.env"
           REMOTE
