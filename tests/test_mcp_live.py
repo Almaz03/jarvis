@@ -217,6 +217,9 @@ class MCPLiveTests(unittest.TestCase):
         self.assertEqual(payload["data"]["message_ref"], result["message_ref"])
         self.assertNotIn(fixture()["message"]["text"], json.dumps(payload))
         self.assertEqual(db.execute("SELECT status FROM deliveries").fetchone()[0], "delivered")
+        health = self.client.get("/health").json()
+        self.assertEqual(health["last_delivery"], {"status": "delivered", "http_status": 204,
+                                                    "attempts": 1})
 
     def test_new_subscription_does_not_replay_existing_inbox(self):
         old = fixture()

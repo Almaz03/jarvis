@@ -157,6 +157,10 @@ class Store:
               status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
               next_attempt INTEGER NOT NULL DEFAULT 0, last_status INTEGER,
               PRIMARY KEY(subscription_id,event_id));
+            CREATE TABLE IF NOT EXISTS delivery_diagnostics (
+              singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+              status TEXT NOT NULL, http_status INTEGER, attempts INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL);
             """)
             columns = {row[1] for row in self.stand.db.execute("PRAGMA table_info(subscriptions)")}
             if "start_update_id" not in columns:
@@ -356,7 +360,14 @@ class MCPApp:
         with self.store.lock:
             active = self.store.stand.db.execute(
                 "SELECT COUNT(*) FROM subscriptions WHERE active=1").fetchone()[0]
-        return JSONResponse({"status": "ok", "mcp": True, "dot_connected": active > 0})
+            diagnostic = self.store.stand.db.execute(
+                "SELECT status,http_status,attempts FROM delivery_diagnostics WHERE singleton=1").fetchone()
+        result = {"status": "ok", "mcp": True, "dot_connected": active > 0}
+        if diagnostic:
+            result["last_delivery"] = {"status": diagnostic["status"],
+                                       "http_status": diagnostic["http_status"],
+                                       "attempts": diagnostic["attempts"]}
+        return JSONResponse(result)
 
     async def mcp(self, request: Request) -> Response:
         request_id: Any = None
@@ -541,6 +552,12 @@ class MCPApp:
                 self.store.stand.db.execute("""UPDATE deliveries SET status=?,attempts=?,next_attempt=?,last_status=?
                   WHERE subscription_id=? AND event_id=?""",
                   (state, attempt, next_attempt, status_code or None, row["subscription_id"], row["event_id"]))
+                self.store.stand.db.execute("""INSERT INTO delivery_diagnostics
+                  (singleton,status,http_status,attempts,updated_at) VALUES(1,?,?,?,?)
+                  ON CONFLICT(singleton) DO UPDATE SET status=excluded.status,
+                  http_status=excluded.http_status,attempts=excluded.attempts,
+                  updated_at=excluded.updated_at""",
+                  (state, status_code or None, attempt, now))
             handled += 1
         return handled
 
