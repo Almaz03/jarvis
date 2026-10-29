@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!stand/
+!stand/*.py
+!tests/
+!tests/*.py
+!fixtures/
+!fixtures/*.jsonl
