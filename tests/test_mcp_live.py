@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -185,9 +186,11 @@ class MCPLiveTests(unittest.TestCase):
         secret = "whsec_" + base64.b64encode(b"d" * 32).decode()
         with self.app.state.service.store.stand.db:
             self.app.state.service.store.stand.db.execute(
-                "INSERT INTO subscriptions VALUES (?,?,?,?,?,1,?,?)",
+                "INSERT INTO subscriptions "
+                "(id,principal,event_name,callback_url,secret,active,created_at,refresh_before,start_update_id) "
+                "VALUES (?,?,?,?,?,1,?,?,?)",
                 ("sub_health", "auth0|owner", "telegram.message.created",
-                 "https://callback.example/hook", secret, now, now + 300))
+                 "https://callback.example/hook", secret, now, now + 300, 0))
         self.assertTrue(self.client.get("/health").json()["dot_connected"])
 
     def test_event_payload_is_thin_and_delivery_is_persistent(self):
@@ -196,9 +199,11 @@ class MCPLiveTests(unittest.TestCase):
         secret = "whsec_" + base64.b64encode(b"b" * 32).decode()
         db = self.app.state.service.store.stand.db
         with db:
-            db.execute("INSERT INTO subscriptions VALUES (?,?,?,?,?,1,?,?)",
+            db.execute("INSERT INTO subscriptions "
+                       "(id,principal,event_name,callback_url,secret,active,created_at,refresh_before,start_update_id) "
+                       "VALUES (?,?,?,?,?,1,?,?,?)",
                        ("sub_test", "auth0|owner", "telegram.message.created",
-                        "https://callback.example/hook", secret, now, now + 300))
+                        "https://callback.example/hook", secret, now, now + 300, 0))
         seen = []
 
         def deliver(url, signing_secret, event_id, body, subscription_id=None, connector=None):
@@ -212,6 +217,29 @@ class MCPLiveTests(unittest.TestCase):
         self.assertEqual(payload["data"]["message_ref"], result["message_ref"])
         self.assertNotIn(fixture()["message"]["text"], json.dumps(payload))
         self.assertEqual(db.execute("SELECT status FROM deliveries").fetchone()[0], "delivered")
+
+    def test_new_subscription_does_not_replay_existing_inbox(self):
+        old = fixture()
+        self.app.state.service.store.stand.ingest(old)
+        secret = "whsec_" + base64.b64encode(b"e" * 32).decode()
+        principal = Principal("auth0|owner", frozenset({"telegram:events"}))
+        public_answers = [(2, 1, 6, "", ("104.16.0.1", 443))]
+        with patch("stand.mcp_live.socket.getaddrinfo", return_value=public_answers):
+            subscription = self.app.state.service.store.subscribe(
+                principal, "https://callback.example/hook", secret)
+        db = self.app.state.service.store.stand.db
+        with db:
+            db.execute("UPDATE subscriptions SET active=1 WHERE id=?", (subscription["id"],))
+        with patch("stand.mcp_live.signed_post", return_value=(204, b"")):
+            self.assertEqual(self.app.state.service.deliver_once(), 0)
+
+            new = copy.deepcopy(old)
+            new["update_id"] += 1
+            new["message"]["message_id"] += 1
+            new["message"]["date"] += 1
+            new["message"]["text"] = "new after subscription"
+            self.app.state.service.store.stand.ingest(new)
+            self.assertEqual(self.app.state.service.deliver_once(), 1)
 
 
 if __name__ == "__main__":

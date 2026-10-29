@@ -149,6 +149,7 @@ class Store:
               id TEXT PRIMARY KEY, principal TEXT NOT NULL, event_name TEXT NOT NULL,
               callback_url TEXT NOT NULL, secret TEXT NOT NULL, active INTEGER NOT NULL,
               created_at INTEGER NOT NULL, refresh_before INTEGER NOT NULL,
+              start_update_id INTEGER NOT NULL DEFAULT 0,
               UNIQUE(principal,event_name,callback_url));
             CREATE TABLE IF NOT EXISTS deliveries (
               subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
@@ -157,6 +158,10 @@ class Store:
               next_attempt INTEGER NOT NULL DEFAULT 0, last_status INTEGER,
               PRIMARY KEY(subscription_id,event_id));
             """)
+            columns = {row[1] for row in self.stand.db.execute("PRAGMA table_info(subscriptions)")}
+            if "start_update_id" not in columns:
+                self.stand.db.execute(
+                    "ALTER TABLE subscriptions ADD COLUMN start_update_id INTEGER NOT NULL DEFAULT 0")
 
     def close(self) -> None:
         self.stand.close()
@@ -217,11 +222,13 @@ class Store:
         now = int(time.time())
         refresh = now + 86400 * 30
         with self.lock, self.stand.db:
+            latest_update_id = self.stand.db.execute(
+                "SELECT COALESCE(MAX(update_id),-1) FROM messages").fetchone()[0]
             self.stand.db.execute("""INSERT INTO subscriptions
-              (id,principal,event_name,callback_url,secret,active,created_at,refresh_before)
-              VALUES(?,?,?,?,?,0,?,?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,
+              (id,principal,event_name,callback_url,secret,active,created_at,refresh_before,start_update_id)
+              VALUES(?,?,?,?,?,0,?,?,?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,
               active=0,refresh_before=excluded.refresh_before""",
-              (sub_id, principal.subject, EVENT_NAME, url, secret, now, refresh))
+              (sub_id, principal.subject, EVENT_NAME, url, secret, now, refresh, latest_update_id))
         return {"id": sub_id, "refreshBefore": datetime.fromtimestamp(refresh, timezone.utc).isoformat().replace("+00:00", "Z"),
                 "cursor": None, "truncated": False}
 
@@ -497,7 +504,8 @@ class MCPApp:
             self.store.stand.db.execute("""INSERT OR IGNORE INTO deliveries
               (subscription_id,event_id,message_ref,status,attempts,next_attempt)
               SELECT s.id,m.event_id,m.message_ref,'pending',0,0
-              FROM subscriptions s CROSS JOIN messages m WHERE s.active=1""")
+              FROM subscriptions s CROSS JOIN messages m
+              WHERE s.active=1 AND m.update_id>s.start_update_id""")
         with self.store.lock:
             rows = self.store.stand.db.execute("""SELECT d.*,s.callback_url,s.secret
               FROM deliveries d JOIN subscriptions s ON s.id=d.subscription_id
