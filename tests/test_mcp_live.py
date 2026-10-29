@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 
 from stand.__main__ import fixture
 from stand.mcp_live import (Auth0Verifier, LiveConfig, MCPError, Principal, PROTOCOL,
-                            create_app, validate_callback_url, webhook_signature)
+                            create_app, signed_post, validate_callback_url, webhook_signature)
 
 
 TOKEN = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234567890"
@@ -140,6 +140,55 @@ class MCPLiveTests(unittest.TestCase):
         expected = base64.b64encode(__import__("hmac").new(
             secret_bytes, b"evt_1.123.{\"ok\":true}", __import__("hashlib").sha256).digest()).decode()
         self.assertEqual(webhook_signature(secret, "evt_1", "123", b'{"ok":true}'), "v1," + expected)
+
+    def test_callback_prefers_ipv4_when_ipv6_is_also_resolved(self):
+        answers = [
+            (10, 1, 6, "", ("2606:4700::6810:1", 443, 0, 0)),
+            (2, 1, 6, "", ("104.16.0.1", 443)),
+        ]
+        attempts = []
+
+        class Response:
+            status = 200
+
+            @staticmethod
+            def read(_limit):
+                return b'{"challenge":"ok"}'
+
+        class Connection:
+            def __init__(self, _host, address, _timeout):
+                self.address = address
+
+            def request(self, _method, _path, body=None, headers=None):
+                attempts.append(self.address)
+                if ":" in self.address:
+                    raise OSError("IPv6 route unavailable")
+
+            @staticmethod
+            def getresponse():
+                return Response()
+
+            @staticmethod
+            def close():
+                pass
+
+        secret = "whsec_" + base64.b64encode(b"c" * 32).decode()
+        with patch("stand.mcp_live.socket.getaddrinfo", return_value=answers):
+            status, _body = signed_post("https://callback.example/hook", secret,
+                                        "verify_1", b'{"challenge":"ok"}', connector=Connection)
+        self.assertEqual(status, 200)
+        self.assertEqual(attempts, ["104.16.0.1"])
+
+    def test_health_reflects_active_subscription(self):
+        self.assertFalse(self.client.get("/health").json()["dot_connected"])
+        now = int(time.time())
+        secret = "whsec_" + base64.b64encode(b"d" * 32).decode()
+        with self.app.state.service.store.stand.db:
+            self.app.state.service.store.stand.db.execute(
+                "INSERT INTO subscriptions VALUES (?,?,?,?,?,1,?,?)",
+                ("sub_health", "auth0|owner", "telegram.message.created",
+                 "https://callback.example/hook", secret, now, now + 300))
+        self.assertTrue(self.client.get("/health").json()["dot_connected"])
 
     def test_event_payload_is_thin_and_delivery_is_persistent(self):
         result = self.app.state.service.store.stand.ingest(fixture())

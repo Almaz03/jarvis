@@ -281,30 +281,39 @@ def signed_post(url: str, secret: str, webhook_id: str, body: bytes,
                 subscription_id: str | None = None,
                 connector: Callable[..., http.client.HTTPSConnection] = PinnedHTTPSConnection) -> tuple[int, bytes]:
     host, _port, path = validate_callback_url(url)
-    addresses = sorted({a[4][0] for a in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)})
-    # Pin the exact already-validated address used for the connection to prevent DNS rebinding.
-    address = secrets.choice(addresses)
-    if not ipaddress.ip_address(address).is_global:
+    addresses = {a[4][0] for a in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
+    # Prefer IPv4 because many VPSes resolve AAAA records without having a working
+    # IPv6 route. Every candidate remains pinned and revalidated, so falling back
+    # cannot turn DNS rebinding into access to a private address.
+    ordered_addresses = sorted(addresses, key=lambda value: (ipaddress.ip_address(value).version, value))
+    if not ordered_addresses or any(not ipaddress.ip_address(value).is_global for value in ordered_addresses):
         raise MCPError(-32602, "Callback address forbidden")
     timestamp = str(int(time.time()))
     signature = webhook_signature(secret, webhook_id, timestamp, body)
-    connection = connector(host, address, 10)
-    try:
-        headers = {
-            "Content-Type": "application/json", "Host": host,
-            "webhook-id": webhook_id, "webhook-timestamp": timestamp,
-            "webhook-signature": signature,
-        }
-        if subscription_id:
-            headers["X-MCP-Subscription-Id"] = subscription_id
-        connection.request("POST", path, body=body, headers=headers)
-        response = connection.getresponse()
-        data = response.read(MAX_BODY + 1)
-        if len(data) > MAX_BODY:
-            raise MCPError(-32015, "Callback response too large")
-        return response.status, data
-    finally:
-        connection.close()
+    headers = {
+        "Content-Type": "application/json", "Host": host,
+        "webhook-id": webhook_id, "webhook-timestamp": timestamp,
+        "webhook-signature": signature,
+    }
+    if subscription_id:
+        headers["X-MCP-Subscription-Id"] = subscription_id
+    last_error: OSError | None = None
+    for address in ordered_addresses:
+        connection = connector(host, address, 10)
+        try:
+            connection.request("POST", path, body=body, headers=headers)
+            response = connection.getresponse()
+            data = response.read(MAX_BODY + 1)
+            if len(data) > MAX_BODY:
+                raise MCPError(-32015, "Callback response too large")
+            return response.status, data
+        except OSError as error:
+            last_error = error
+        finally:
+            connection.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("no validated callback address")
 
 
 def webhook_signature(secret: str, webhook_id: str, timestamp: str, body: bytes) -> str:
@@ -337,7 +346,10 @@ class MCPApp:
             "bearer_methods_supported": ["header"]})
 
     async def health(self, _request: Request) -> Response:
-        return JSONResponse({"status": "ok", "mcp": True, "dot_connected": False})
+        with self.store.lock:
+            active = self.store.stand.db.execute(
+                "SELECT COUNT(*) FROM subscriptions WHERE active=1").fetchone()[0]
+        return JSONResponse({"status": "ok", "mcp": True, "dot_connected": active > 0})
 
     async def mcp(self, request: Request) -> Response:
         request_id: Any = None
