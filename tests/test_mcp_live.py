@@ -94,6 +94,11 @@ class MCPLiveTests(unittest.TestCase):
                         arguments={"message_ref": ref}), **{"Mcp-Name": "read_telegram_message"})
         self.assertEqual(read.status_code, 200, read.text)
         self.assertTrue(read.json()["result"]["structuredContent"]["untrusted"])
+        latest = self.rpc("tools/call", self.params(name="read_telegram_message",
+                          arguments={"message_ref": "latest"}),
+                          **{"Mcp-Name": "read_telegram_message"})
+        self.assertEqual(latest.status_code, 200, latest.text)
+        self.assertEqual(latest.json()["result"]["structuredContent"]["message_ref"], ref)
         reply = self.rpc("tools/call", self.params(name="reply_to_telegram_message",
                          arguments={"message_ref": ref, "text": "hi", "idempotency_key": "one"}),
                          **{"Mcp-Name": "reply_to_telegram_message"})
