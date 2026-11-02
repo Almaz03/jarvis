@@ -225,6 +225,25 @@ class MCPLiveTests(unittest.TestCase):
         health = self.client.get("/health").json()
         self.assertEqual(health["last_delivery"], {"status": "delivered", "http_status": 204,
                                                     "attempts": 1})
+        diagnostics = self.rpc("tools/call", self.params(name="read_telegram_message",
+                               arguments={"message_ref": "diagnostics"}),
+                               **{"Mcp-Name": "read_telegram_message"})
+        self.assertEqual(diagnostics.status_code, 200, diagnostics.text)
+        status = diagnostics.json()["result"]["structuredContent"]
+        self.assertEqual(status["latest_message"]["message_ref"], result["message_ref"])
+        self.assertEqual(status["last_delivery"]["message_ref"], result["message_ref"])
+        self.assertEqual(status["last_delivery"]["http_status"], 204)
+        self.assertEqual(len(status["last_delivery"]["subscription_hash"]), 16)
+        self.assertEqual(len(status["last_delivery"]["event_hash"]), 16)
+        serialized = json.dumps(status)
+        self.assertNotIn(fixture()["message"]["text"], serialized)
+        self.assertNotIn("callback.example", serialized)
+        self.assertNotIn(secret, serialized)
+
+        with self.assertRaises(MCPError) as caught:
+            self.app.state.service.store.read(
+                Principal("auth0|owner", frozenset()), "diagnostics")
+        self.assertEqual(caught.exception.http_status, 403)
 
     def test_new_subscription_does_not_replay_existing_inbox(self):
         old = fixture()
