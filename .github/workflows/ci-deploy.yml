@@ -88,6 +88,7 @@ jobs:
             exit 1
           fi
           echo "VPS_PORT=$VPS_PORT" >> "$GITHUB_ENV"
+          echo "SLACK_OAUTH_ENABLED=$SLACK_OAUTH_ENABLED" >> "$GITHUB_ENV"
       - name: Configure SSH
         shell: bash
         run: |
