@@ -1,0 +1,27 @@
+{
+  "_metadata": {
+    "major_version": 2,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "Jarvis Telegram Relay",
+    "description": "Owner-only relay between one Telegram chat and one Slack DM",
+    "background_color": "#111827"
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "https://jarvis.akalmaz.tech/slack/oauth/callback"
+    ],
+    "scopes": {
+      "user": [
+        "chat:write",
+        "im:history"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
