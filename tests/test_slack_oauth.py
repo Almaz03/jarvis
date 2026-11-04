@@ -124,6 +124,7 @@ class SlackOAuthTests(unittest.TestCase):
         response = self.client.get("/slack/oauth/callback",
                                    params={"state": state, "code": "code.1234567890"})
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json(), {"error": "slack_oauth_token_type_mismatch"})
         count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
         self.assertEqual(count, 0)
 
@@ -137,12 +138,14 @@ class SlackOAuthTests(unittest.TestCase):
 
     def test_wrong_owner_team_scope_or_token_fails_closed(self) -> None:
         mutations = [
-            {"team": {"id": "T9999999999"}},
-            {"authed_user": {"id": "U9999999999", "scope": "chat:write,im:history"}},
-            {"authed_user": {"id": OWNER_ID, "scope": "chat:write,im:history,im:read"}},
-            {"access_token": "not-a-token"},
+            ({"team": {"id": "T9999999999"}}, "slack_oauth_team_mismatch", 403),
+            ({"authed_user": {"id": "U9999999999", "scope": "chat:write,im:history"}},
+             "slack_oauth_owner_mismatch", 403),
+            ({"authed_user": {"id": OWNER_ID, "scope": "chat:write,im:history,im:read"}},
+             "slack_oauth_scope_mismatch", 403),
+            ({"access_token": "not-a-token"}, "invalid_slack_user_token", 502),
         ]
-        for mutation in mutations:
+        for mutation, error, status in mutations:
             with self.subTest(mutation=mutation):
                 _url, state = self.start()
                 base = {"ok": True, "access_token": USER_TOKEN, "token_type": "user",
@@ -152,9 +155,23 @@ class SlackOAuthTests(unittest.TestCase):
                 self.service.exchanger = lambda _config, _code, result=base: result
                 response = self.client.get("/slack/oauth/callback",
                                            params={"state": state, "code": "code.1234567890"})
-                self.assertIn(response.status_code, (403, 502))
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.json(), {"error": error})
                 count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
                 self.assertEqual(count, 0)
+
+    def test_missing_identity_objects_reports_shape_only(self) -> None:
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": "user",
+            "team": None, "authed_user": None,
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json(), {"error": "slack_oauth_response_shape_mismatch"})
+        self.assertNotIn(TEAM_ID, response.text)
+        self.assertNotIn(OWNER_ID, response.text)
 
     def test_env_is_disabled_by_default_and_relay_fails_closed(self) -> None:
         self.assertIsNone(SlackOAuthConfig.from_env({}))

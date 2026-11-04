@@ -248,7 +248,7 @@ class SlackOAuthService:
             team = result.get("team")
             user = result.get("authed_user")
             if not isinstance(team, dict) or not isinstance(user, dict):
-                raise SlackOAuthError("slack_oauth_identity_mismatch", 403)
+                raise SlackOAuthError("slack_oauth_response_shape_mismatch", 403)
             # oauth.v2.user.access documents token fields at the top level,
             # while oauth.v2.access places the user grant inside authed_user
             # (and may use the top level for a bot grant). Prefer the explicit
@@ -258,13 +258,15 @@ class SlackOAuthService:
             token_type = user.get("token_type") if nested_grant else result.get("token_type")
             token = user.get("access_token") if nested_grant else result.get("access_token")
             if token_type != "user":
-                raise SlackOAuthError("slack_oauth_identity_mismatch", 403)
+                raise SlackOAuthError("slack_oauth_token_type_mismatch", 403)
             team_id = team.get("id")
             user_id = user.get("id")
-            if (not isinstance(team_id, str) or not hmac.compare_digest(team_id, self.config.team_id)
-                    or not isinstance(user_id, str)
+            if (not isinstance(team_id, str)
+                    or not hmac.compare_digest(team_id, self.config.team_id)):
+                raise SlackOAuthError("slack_oauth_team_mismatch", 403)
+            if (not isinstance(user_id, str)
                     or not hmac.compare_digest(user_id, self.config.owner_user_id)):
-                raise SlackOAuthError("slack_oauth_identity_mismatch", 403)
+                raise SlackOAuthError("slack_oauth_owner_mismatch", 403)
             scopes = user.get("scope", "")
             granted = frozenset(scopes.split(",")) if isinstance(scopes, str) else frozenset()
             if granted != SLACK_SCOPES:
