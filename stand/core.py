@@ -28,6 +28,7 @@ SENSITIVE_ENV = (
     "MCP_CALLBACK_URL", "MCP_CALLBACK_SECRET", "MCP_DESTINATION_URL",
     "MCP_ACCESS_TOKEN", "MCP_REFRESH_TOKEN", "OAUTH_CLIENT_SECRET", "OPENAI_API_KEY",
     "AUTH0_OWNER_SUB",
+    "SLACK_CLIENT_SECRET", "SLACK_OAUTH_SETUP_TOKEN", "SLACK_TOKEN_ENCRYPTION_KEY",
 )
 MOCK_PRINCIPAL = "offline-fixture-owner"
 MAX_UPDATE_BYTES = 64 * 1024
@@ -80,6 +81,7 @@ def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
     text = re.sub(r"\b\d{5,}:[A-Za-z0-9_-]{16,}\b", "[REDACTED]", text)
     text = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", text)
     text = re.sub(r"\bwhsec_[A-Za-z0-9_+/=-]+", "[REDACTED]", text)
+    text = re.sub(r"\b(?:xoxp-|xoxe\.xoxp-)[A-Za-z0-9._-]+", "[REDACTED]", text)
     return text
 
 

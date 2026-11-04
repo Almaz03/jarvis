@@ -189,9 +189,9 @@ class BoundaryTests(unittest.TestCase):
                 self.assertNotIn(value, str(caught.exception))
 
     def test_redaction_and_allowlisted_audit(self):
-        sample = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_123456 Bearer fakeBearer whsec_abcd1234+xyz= customsecret"
+        sample = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_123456 Bearer fakeBearer whsec_abcd1234+xyz= xoxp-secretvalue1234567890 customsecret"
         clean = redact(sample, ("customsecret",))
-        for secret in ("123456:", "fakeBearer", "whsec_", "customsecret"):
+        for secret in ("123456:", "fakeBearer", "whsec_", "xoxp-", "customsecret"):
             self.assertNotIn(secret, clean)
         audit = audit_record({"accepted": True, "text": sample, "token": sample,
                               "chat_id": 424242, "from": 424242, "callback_url": sample})

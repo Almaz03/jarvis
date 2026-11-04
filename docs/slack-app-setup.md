@@ -46,6 +46,15 @@ ID, token type, and exact granted scopes. The token and refresh material must be
 stored server-side with owner-only filesystem permissions and never returned to
 the browser or logs.
 
+The prepared callback requires a `POST /slack/oauth/start` request with a
+separate bearer setup token. It returns a no-store authorization URL containing
+a single-use, hashed-at-rest state value with a ten-minute TTL. The callback
+encrypts the Slack user token with AES-256-GCM before writing it to the existing
+owner-only state database. The setup token, encryption key, client secret, and
+Slack token are never returned by diagnostics. The callback is absent unless
+`SLACK_OAUTH_ENABLED=true`, and `SLACK_RELAY_ENABLED=true` fails closed because
+message relay is intentionally not implemented in this stage.
+
 Do not approve the OAuth screen until the callback exists and the user has
 separately confirmed the exact workspace, user, scopes, storage location, and
 one-message test. Slack scopes are additive; reauthorization cannot silently

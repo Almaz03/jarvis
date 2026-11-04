@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .core import Config, Stand, StandError
+from .slack_oauth import SlackOAuthConfig, SlackOAuthService
 from .telegram_live import TelegramClient
 
 
@@ -640,14 +641,28 @@ class MCPApp:
 
 
 def create_app(config: LiveConfig | None = None, verifier: Callable[[str], Principal] | None = None,
-               telegram: TelegramClient | None = None) -> Starlette:
-    service = MCPApp(config or LiveConfig.from_env(), verifier, telegram)
-    app = Starlette(routes=[
+               telegram: TelegramClient | None = None,
+               slack_oauth: SlackOAuthService | None = None) -> Starlette:
+    resolved_config = config or LiveConfig.from_env()
+    service = MCPApp(resolved_config, verifier, telegram)
+    if config is None and slack_oauth is None:
+        slack_config = SlackOAuthConfig.from_env()
+        if slack_config is not None:
+            slack_oauth = SlackOAuthService(
+                slack_config, service.store.stand.db, service.store.lock)
+    routes = [
         Route("/.well-known/oauth-protected-resource", service.metadata, methods=["GET"]),
         Route("/health", service.health, methods=["GET"]),
         Route("/mcp", service.mcp, methods=["POST"]),
-    ])
+    ]
+    if slack_oauth is not None:
+        routes.extend([
+            Route("/slack/oauth/start", slack_oauth.start, methods=["POST"]),
+            Route("/slack/oauth/callback", slack_oauth.callback, methods=["GET"]),
+        ])
+    app = Starlette(routes=routes)
     app.state.service = service
+    app.state.slack_oauth = slack_oauth
     return app
 
 

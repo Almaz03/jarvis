@@ -46,6 +46,12 @@ jobs:
       TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
       TELEGRAM_OWNER_CHAT_ID: ${{ secrets.TELEGRAM_OWNER_CHAT_ID }}
       AUTH0_OWNER_SUB: ${{ secrets.AUTH0_OWNER_SUB }}
+      SLACK_OAUTH_ENABLED: ${{ vars.SLACK_OAUTH_ENABLED }}
+      SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+      SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+      SLACK_OWNER_USER_ID: ${{ secrets.SLACK_OWNER_USER_ID }}
+      SLACK_OAUTH_SETUP_TOKEN: ${{ secrets.SLACK_OAUTH_SETUP_TOKEN }}
+      SLACK_TOKEN_ENCRYPTION_KEY: ${{ secrets.SLACK_TOKEN_ENCRYPTION_KEY }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -64,6 +70,23 @@ jobs:
           [[ "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]]
           [[ "$TELEGRAM_OWNER_USER_ID" =~ ^[1-9][0-9]{0,18}$ ]]
           [[ "$TELEGRAM_OWNER_CHAT_ID" =~ ^[1-9][0-9]{0,18}$ ]]
+          : "${SLACK_OAUTH_ENABLED:=false}"
+          if [ "$SLACK_OAUTH_ENABLED" = true ]; then
+            for name in SLACK_CLIENT_ID SLACK_CLIENT_SECRET SLACK_OWNER_USER_ID SLACK_OAUTH_SETUP_TOKEN SLACK_TOKEN_ENCRYPTION_KEY; do
+              if [ -z "${!name}" ]; then
+                echo "::error::Missing required Slack OAuth production secret: $name"
+                exit 1
+              fi
+            done
+            [[ "$SLACK_CLIENT_ID" =~ ^[0-9]{5,20}\.[0-9]{5,20}$ ]]
+            [[ "$SLACK_CLIENT_SECRET" =~ ^[A-Za-z0-9]{24,256}$ ]]
+            [[ "$SLACK_OWNER_USER_ID" =~ ^[A-Z][A-Z0-9]{8,20}$ ]]
+            [[ "$SLACK_OAUTH_SETUP_TOKEN" =~ ^[A-Za-z0-9_-]{32,256}$ ]]
+            [[ "$SLACK_TOKEN_ENCRYPTION_KEY" =~ ^[A-Za-z0-9_-]{43}=$ ]]
+          elif [ "$SLACK_OAUTH_ENABLED" != false ]; then
+            echo "::error::SLACK_OAUTH_ENABLED must be true or false"
+            exit 1
+          fi
           echo "VPS_PORT=$VPS_PORT" >> "$GITHUB_ENV"
       - name: Configure SSH
         shell: bash
@@ -90,6 +113,18 @@ jobs:
               printf 'MCP_ENABLED=true\n'
             else
               printf 'MCP_ENABLED=false\n'
+            fi
+            printf 'SLACK_OAUTH_ENABLED=%s\n' "$SLACK_OAUTH_ENABLED"
+            printf 'SLACK_RELAY_ENABLED=false\n'
+            if [ "$SLACK_OAUTH_ENABLED" = true ]; then
+              printf 'SLACK_APP_ID=A0CFN4GD8L8\n'
+              printf 'SLACK_TEAM_ID=T039VA2H3V5\n'
+              printf 'SLACK_TARGET_DM_ID=D0C7SAYJB24\n'
+              printf 'SLACK_CLIENT_ID=%s\n' "$SLACK_CLIENT_ID"
+              printf 'SLACK_CLIENT_SECRET=%s\n' "$SLACK_CLIENT_SECRET"
+              printf 'SLACK_OWNER_USER_ID=%s\n' "$SLACK_OWNER_USER_ID"
+              printf 'SLACK_OAUTH_SETUP_TOKEN=%s\n' "$SLACK_OAUTH_SETUP_TOKEN"
+              printf 'SLACK_TOKEN_ENCRYPTION_KEY=%s\n' "$SLACK_TOKEN_ENCRYPTION_KEY"
             fi
           } > jarvis-deploy.env
       - name: Upload release

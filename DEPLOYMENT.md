@@ -22,6 +22,20 @@ smoke-test. Deployment выполняется только если repository v
   `auth0|...`. Пока secret отсутствует, MCP/Caddy profile не запускается и
   существующий Telegram ingress продолжает работать.
 
+Callback-only Slack OAuth по умолчанию выключен. Для отдельного согласованного
+этапа добавьте secrets `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`,
+`SLACK_OWNER_USER_ID`, `SLACK_OAUTH_SETUP_TOKEN` и
+`SLACK_TOKEN_ENCRYPTION_KEY`, затем установите repository variable
+`SLACK_OAUTH_ENABLED=true`. Фиксированные App/Workspace/DM ID уже зашиты в
+fail-closed конфигурацию. `SLACK_RELAY_ENABLED` workflow всегда записывает как
+`false`: callback может сохранить зашифрованный user token, но не читает и не
+отправляет Slack-сообщения.
+
+`SLACK_TOKEN_ENCRYPTION_KEY` — ровно 32 случайных байта в canonical URL-safe
+base64; `SLACK_OAUTH_SETUP_TOKEN` — случайная URL-safe строка не короче 32
+символов. Значения добавляются только через GitHub Environment secrets и не
+передаются в чат или репозиторий.
+
 Ни одно значение не отправляйте в чат и не добавляйте в Git.
 
 После добавления secrets создайте repository variable `DEPLOY_ENABLED=true`
