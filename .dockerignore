@@ -1,6 +1,7 @@
 **
 !Dockerfile
 !requirements.txt
+!slack-app-manifest.json
 !stand/
 !stand/*.py
 !tests/
