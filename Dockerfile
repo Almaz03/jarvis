@@ -12,7 +12,8 @@ RUN --mount=type=secret,id=proxy_ca,required=false \
 COPY stand /app/stand
 COPY tests /app/tests
 COPY fixtures /app/fixtures
-RUN chmod -R a=rX /app/stand /app/tests /app/fixtures
+COPY slack-app-manifest.json /app/slack-app-manifest.json
+RUN chmod -R a=rX /app/stand /app/tests /app/fixtures /app/slack-app-manifest.json
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER 65534:65534
 # No EXPOSE, credentials, package install, network client, or live transport.

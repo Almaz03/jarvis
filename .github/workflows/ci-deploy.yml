@@ -102,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          tar -czf jarvis-release.tgz Dockerfile Caddyfile requirements.txt compose.yaml .dockerignore .gitignore stand tests fixtures README.md VERIFICATION.md
+          tar -czf jarvis-release.tgz Dockerfile Caddyfile requirements.txt compose.yaml slack-app-manifest.json .dockerignore .gitignore stand tests fixtures README.md VERIFICATION.md
           {
             printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
             printf 'TELEGRAM_OWNER_USER_ID=%s\n' "$TELEGRAM_OWNER_USER_ID"
