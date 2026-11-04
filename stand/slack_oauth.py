@@ -247,8 +247,17 @@ class SlackOAuthService:
             result = self.exchanger(self.config, code)
             team = result.get("team")
             user = result.get("authed_user")
-            if (result.get("token_type") != "user" or not isinstance(team, dict)
-                    or not isinstance(user, dict)):
+            if not isinstance(team, dict) or not isinstance(user, dict):
+                raise SlackOAuthError("slack_oauth_identity_mismatch", 403)
+            # oauth.v2.user.access documents token fields at the top level,
+            # while oauth.v2.access places the user grant inside authed_user
+            # (and may use the top level for a bot grant). Prefer the explicit
+            # nested user grant when present, otherwise accept the user-centric
+            # response shape. Identity/scope checks below remain identical.
+            nested_grant = "token_type" in user or "access_token" in user
+            token_type = user.get("token_type") if nested_grant else result.get("token_type")
+            token = user.get("access_token") if nested_grant else result.get("access_token")
+            if token_type != "user":
                 raise SlackOAuthError("slack_oauth_identity_mismatch", 403)
             team_id = team.get("id")
             user_id = user.get("id")
@@ -260,7 +269,6 @@ class SlackOAuthService:
             granted = frozenset(scopes.split(",")) if isinstance(scopes, str) else frozenset()
             if granted != SLACK_SCOPES:
                 raise SlackOAuthError("slack_oauth_scope_mismatch", 403)
-            token = result.get("access_token")
             if not isinstance(token, str) or not USER_TOKEN.fullmatch(token):
                 raise SlackOAuthError("invalid_slack_user_token", 502)
             self.store.save_installation(token, int(self.clock()))

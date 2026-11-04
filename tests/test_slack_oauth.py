@@ -85,6 +85,48 @@ class SlackOAuthTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 400)
         self.assertEqual(len(self.exchange_calls), 1)
 
+    def test_standard_v2_nested_user_grant_is_accepted(self) -> None:
+        nested_token = "xoxp-" + "n" * 40
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True,
+            "access_token": "xoxb-" + "b" * 40,
+            "token_type": "bot",
+            "authed_user": {
+                "id": OWNER_ID,
+                "scope": "chat:write,im:history",
+                "access_token": nested_token,
+                "token_type": "user",
+            },
+            "team": {"id": TEAM_ID},
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 200)
+        row = self.stand.db.execute("SELECT * FROM slack_installation").fetchone()
+        self.assertIsNotNone(row)
+        self.assertNotIn(nested_token, row["token_ciphertext"])
+
+    def test_nested_non_user_grant_fails_even_with_top_level_user(self) -> None:
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True,
+            "access_token": USER_TOKEN,
+            "token_type": "user",
+            "authed_user": {
+                "id": OWNER_ID,
+                "scope": "chat:write,im:history",
+                "access_token": "xoxb-" + "b" * 40,
+                "token_type": "bot",
+            },
+            "team": {"id": TEAM_ID},
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 403)
+        count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_expired_state_does_not_exchange(self) -> None:
         _url, state = self.start()
         self.now += 601
