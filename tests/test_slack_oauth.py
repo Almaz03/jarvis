@@ -129,9 +129,83 @@ class SlackOAuthTests(unittest.TestCase):
         response = self.client.get("/slack/oauth/callback",
                                    params={"state": state, "code": "code.1234567890"})
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json(), {"error": "slack_oauth_token_type_mismatch"})
+        self.assertEqual(response.json()["error"], "slack_oauth_token_type_mismatch")
+        self.assertEqual(response.json()["diagnostic"]["selected_grant_location"], "nested")
+        self.assertEqual(response.json()["diagnostic"]["selected_token_type"],
+                         "documented_bot")
         count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
         self.assertEqual(count, 0)
+
+    def test_bearer_or_missing_type_requires_auth_test(self) -> None:
+        for token_type in ("Bearer", None):
+            with self.subTest(token_type=token_type):
+                self.identity_calls.clear()
+                result = {
+                    "ok": True, "access_token": USER_TOKEN,
+                    "authed_user": {"id": OWNER_ID, "scope": "chat:write,im:history"},
+                    "team": {"id": TEAM_ID},
+                }
+                if token_type is not None:
+                    result["token_type"] = token_type
+                self.service.exchanger = lambda _config, _code, value=result: value
+                _url, state = self.start()
+                response = self.client.get(
+                    "/slack/oauth/callback",
+                    params={"state": state, "code": "code.1234567890"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(self.identity_calls, [USER_TOKEN])
+                self.assertEqual(self.service.store.config.team_id, TEAM_ID)
+
+    def test_auth_test_bot_identity_is_rejected_for_bearer(self) -> None:
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": "Bearer",
+            "authed_user": {"id": OWNER_ID, "scope": "chat:write,im:history"},
+            "team": {"id": TEAM_ID},
+        }
+        self.service.identity_verifier = lambda _token: {
+            "ok": True, "team_id": TEAM_ID, "user_id": OWNER_ID,
+            "bot_id": "B0123456789",
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 403)
+        body = response.json()
+        self.assertEqual(body["error"], "slack_oauth_token_type_mismatch")
+        self.assertEqual(body["diagnostic"]["selected_token_type"], "oauth_bearer")
+        self.assertNotIn("B0123456789", response.text)
+
+    def test_unknown_token_type_is_categorized_without_echoing_it(self) -> None:
+        raw_type = "unexpected-private-type"
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": raw_type,
+            "authed_user": {"id": OWNER_ID, "scope": "chat:write,im:history"},
+            "team": {"id": TEAM_ID},
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 403)
+        body = response.json()
+        self.assertEqual(body["error"], "slack_oauth_token_type_mismatch")
+        self.assertEqual(body["diagnostic"]["selected_token_type"], "other_string")
+        self.assertNotIn(raw_type, response.text)
+        self.assertEqual(self.identity_calls, [])
+
+    def test_partial_nested_metadata_does_not_select_top_level_bot_or_empty_token(self) -> None:
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": "user",
+            "authed_user": {
+                "id": OWNER_ID, "scope": "chat:write,im:history",
+                "token_type": "bot",
+            },
+            "team": {"id": TEAM_ID},
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.identity_calls, [])
 
     def test_expired_state_does_not_exchange(self) -> None:
         _url, state = self.start()
@@ -161,7 +235,8 @@ class SlackOAuthTests(unittest.TestCase):
                 response = self.client.get("/slack/oauth/callback",
                                            params={"state": state, "code": "code.1234567890"})
                 self.assertEqual(response.status_code, status)
-                self.assertEqual(response.json(), {"error": error})
+                self.assertEqual(response.json()["error"], error)
+                self.assertNotIn("not-a-token", response.text)
                 count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
                 self.assertEqual(count, 0)
 
@@ -234,9 +309,14 @@ class SlackOAuthTests(unittest.TestCase):
             "authed_user_token_type", "top_level_scope",
             "top_level_access_token", "top_level_token_type",
             "top_level_team_id", "top_level_user_id",
+            "selected_grant_location", "selected_token_type",
+            "selected_access_token",
         })
         self.assertTrue(set(body["diagnostic"].values()) <= {
             "missing", "null", "object", "string", "other", "unavailable",
+            "nested", "top_level", "missing_or_null", "other_type",
+            "expected_user", "documented_bot", "oauth_bearer", "other_string",
+            "user_token_pattern", "bot_token_pattern",
         })
         self.assertNotIn(secret, response.text)
         self.assertNotIn(TEAM_ID, response.text)

@@ -85,6 +85,32 @@ def oauth_shape_diagnostic(result: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _token_type_category(value: Any) -> str:
+    if value is None:
+        return "missing_or_null"
+    if not isinstance(value, str):
+        return "other_type"
+    if value == "user":
+        return "expected_user"
+    if value == "bot":
+        return "documented_bot"
+    if value.casefold() == "bearer":
+        return "oauth_bearer"
+    return "other_string"
+
+
+def _token_category(value: Any) -> str:
+    if value is None:
+        return "missing_or_null"
+    if not isinstance(value, str):
+        return "other_type"
+    if USER_TOKEN.fullmatch(value):
+        return "user_token_pattern"
+    if value.startswith(("xoxb-", "xoxe.xoxb-")):
+        return "bot_token_pattern"
+    return "other_string"
+
+
 def _strict_bool(value: str, name: str) -> bool:
     if value == "true":
         return True
@@ -326,13 +352,22 @@ class SlackOAuthService:
             # nested user grant when present, otherwise accept the user-centric
             # response shape. Identity/scope checks below remain identical.
             nested_grant = (isinstance(user, dict)
-                            and ("token_type" in user or "access_token" in user))
+                            and isinstance(user.get("access_token"), str))
+            grant_location = "nested" if nested_grant else "top_level"
             token_type = user.get("token_type") if nested_grant else result.get("token_type")
             token = user.get("access_token") if nested_grant else result.get("access_token")
-            if token_type != "user":
-                raise SlackOAuthError("slack_oauth_token_type_mismatch", 403)
+            diagnostic.update({
+                "selected_grant_location": grant_location,
+                "selected_token_type": _token_type_category(token_type),
+                "selected_access_token": _token_category(token),
+            })
+            token_type_category = _token_type_category(token_type)
+            if token_type_category not in {
+                    "expected_user", "oauth_bearer", "missing_or_null"}:
+                raise SlackOAuthError(
+                    "slack_oauth_token_type_mismatch", 403, diagnostic)
             if not isinstance(token, str) or not USER_TOKEN.fullmatch(token):
-                raise SlackOAuthError("invalid_slack_user_token", 502)
+                raise SlackOAuthError("invalid_slack_user_token", 502, diagnostic)
             scopes = user.get("scope", "") if isinstance(user, dict) else result.get("scope", "")
             granted = frozenset(scopes.split(",")) if isinstance(scopes, str) else frozenset()
             if granted != SLACK_SCOPES:
@@ -349,11 +384,17 @@ class SlackOAuthService:
             if (isinstance(user_id, str)
                     and not hmac.compare_digest(user_id, self.config.owner_user_id)):
                 raise SlackOAuthError("slack_oauth_owner_mismatch", 403)
-            if not isinstance(team_id, str) or not isinstance(user_id, str):
+            verify_identity = (token_type_category != "expected_user"
+                               or not isinstance(team_id, str)
+                               or not isinstance(user_id, str))
+            if verify_identity:
                 try:
                     identity = self.identity_verifier(token)
                 except SlackOAuthError as error:
                     raise SlackOAuthError(error.code, error.status, diagnostic) from None
+                if "bot_id" in identity:
+                    raise SlackOAuthError(
+                        "slack_oauth_token_type_mismatch", 403, diagnostic)
                 team_id = identity.get("team_id")
                 user_id = identity.get("user_id")
                 if not isinstance(team_id, str) or not isinstance(user_id, str):
