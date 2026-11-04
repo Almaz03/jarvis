@@ -32,6 +32,7 @@ class SlackOAuthTests(unittest.TestCase):
         self.stand = Stand(Config(424242, 424242, Path(self.tmp.name) / "state.sqlite3"))
         self.now = 1_800_000_000
         self.exchange_calls = []
+        self.identity_calls = []
 
         def exchange(_config, code):
             self.exchange_calls.append(code)
@@ -39,8 +40,12 @@ class SlackOAuthTests(unittest.TestCase):
                     "authed_user": {"id": OWNER_ID, "scope": "chat:write,im:history"},
                     "team": {"id": TEAM_ID}}
 
+        def verify_identity(token):
+            self.identity_calls.append(token)
+            return {"ok": True, "team_id": TEAM_ID, "user_id": OWNER_ID}
+
         self.service = SlackOAuthService(config(), self.stand.db, self.stand.db_lock,
-                                         exchange, lambda: self.now)
+                                         exchange, verify_identity, lambda: self.now)
         from starlette.applications import Starlette
         from starlette.routing import Route
         self.client = TestClient(Starlette(routes=[
@@ -160,18 +165,84 @@ class SlackOAuthTests(unittest.TestCase):
                 count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
                 self.assertEqual(count, 0)
 
-    def test_missing_identity_objects_reports_shape_only(self) -> None:
+    def test_missing_identity_objects_are_verified_with_auth_test(self) -> None:
         self.service.exchanger = lambda _config, _code: {
             "ok": True, "access_token": USER_TOKEN, "token_type": "user",
-            "team": None, "authed_user": None,
+            "scope": "chat:write,im:history", "team": None, "authed_user": None,
+        }
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.identity_calls, [USER_TOKEN])
+        row = self.stand.db.execute("SELECT * FROM slack_installation").fetchone()
+        self.assertEqual(row["team_id"], TEAM_ID)
+        self.assertEqual(row["owner_user_id"], OWNER_ID)
+
+    def test_identity_fallback_keeps_owner_and_team_checks(self) -> None:
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": "user",
+            "scope": "chat:write,im:history", "team": None, "authed_user": None,
+        }
+        for identity, expected in (
+            ({"ok": True, "team_id": "T9999999999", "user_id": OWNER_ID},
+             "slack_oauth_team_mismatch"),
+            ({"ok": True, "team_id": TEAM_ID, "user_id": "U9999999999"},
+             "slack_oauth_owner_mismatch"),
+        ):
+            with self.subTest(expected=expected):
+                self.service.identity_verifier = lambda _token, value=identity: value
+                _url, state = self.start()
+                response = self.client.get("/slack/oauth/callback",
+                                           params={"state": state, "code": "code.1234567890"})
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json(), {"error": expected})
+        count = self.stand.db.execute("SELECT COUNT(*) FROM slack_installation").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_fallback_never_overrides_a_supplied_identity_conflict(self) -> None:
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": "user",
+            "scope": "chat:write,im:history",
+            "team": {"id": "T9999999999"}, "authed_user": None,
         }
         _url, state = self.start()
         response = self.client.get("/slack/oauth/callback",
                                    params={"state": state, "code": "code.1234567890"})
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json(), {"error": "slack_oauth_response_shape_mismatch"})
+        self.assertEqual(response.json(), {"error": "slack_oauth_team_mismatch"})
+        self.assertEqual(self.identity_calls, [])
+
+    def test_shape_diagnostic_contains_only_allowlisted_type_categories(self) -> None:
+        secret = "raw-secret-that-must-not-leak"
+        self.service.exchanger = lambda _config, _code: {
+            "ok": True, "access_token": USER_TOKEN, "token_type": "user",
+            "scope": "chat:write,im:history", "team": None,
+            "authed_user": None, "unexpected": secret,
+            "team_id": TEAM_ID, "user_id": OWNER_ID,
+        }
+        self.service.identity_verifier = lambda _token: {"ok": True}
+        _url, state = self.start()
+        response = self.client.get("/slack/oauth/callback",
+                                   params={"state": state, "code": "code.1234567890"})
+        self.assertEqual(response.status_code, 502)
+        body = response.json()
+        self.assertEqual(body["error"], "slack_oauth_identity_verification_failed")
+        self.assertEqual(set(body["diagnostic"]), {
+            "team", "authed_user", "team_id", "authed_user_id",
+            "authed_user_scope", "authed_user_access_token",
+            "authed_user_token_type", "top_level_scope",
+            "top_level_access_token", "top_level_token_type",
+            "top_level_team_id", "top_level_user_id",
+        })
+        self.assertTrue(set(body["diagnostic"].values()) <= {
+            "missing", "null", "object", "string", "other", "unavailable",
+        })
+        self.assertNotIn(secret, response.text)
         self.assertNotIn(TEAM_ID, response.text)
         self.assertNotIn(OWNER_ID, response.text)
+        self.assertNotIn(USER_TOKEN, response.text)
+        self.assertNotIn("unexpected", response.text)
 
     def test_env_is_disabled_by_default_and_relay_fails_closed(self) -> None:
         self.assertIsNone(SlackOAuthConfig.from_env({}))

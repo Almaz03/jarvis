@@ -40,9 +40,49 @@ USER_TOKEN = re.compile(r"^(?:xoxp-|xoxe\.xoxp-)[A-Za-z0-9._-]{20,2048}$")
 
 
 class SlackOAuthError(Exception):
-    def __init__(self, code: str, status: int = 400):
+    def __init__(self, code: str, status: int = 400,
+                 diagnostic: dict[str, str] | None = None):
         self.code = code
         self.status = status
+        self.diagnostic = diagnostic
+
+
+def _value_kind(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, str):
+        return "string"
+    return "other"
+
+
+def _field_kind(value: Mapping[str, Any], field: str) -> str:
+    return "missing" if field not in value else _value_kind(value[field])
+
+
+def _member_kind(value: Any, field: str) -> str:
+    return _field_kind(value, field) if isinstance(value, dict) else "unavailable"
+
+
+def oauth_shape_diagnostic(result: Mapping[str, Any]) -> dict[str, str]:
+    """Return an allowlisted type-only summary; never copy response values."""
+    team = result.get("team")
+    user = result.get("authed_user")
+    return {
+        "team": _field_kind(result, "team"),
+        "authed_user": _field_kind(result, "authed_user"),
+        "team_id": _member_kind(team, "id"),
+        "authed_user_id": _member_kind(user, "id"),
+        "authed_user_scope": _member_kind(user, "scope"),
+        "authed_user_access_token": _member_kind(user, "access_token"),
+        "authed_user_token_type": _member_kind(user, "token_type"),
+        "top_level_scope": _field_kind(result, "scope"),
+        "top_level_access_token": _field_kind(result, "access_token"),
+        "top_level_token_type": _field_kind(result, "token_type"),
+        "top_level_team_id": _field_kind(result, "team_id"),
+        "top_level_user_id": _field_kind(result, "user_id"),
+    }
 
 
 def _strict_bool(value: str, name: str) -> bool:
@@ -204,14 +244,42 @@ def exchange_code(config: SlackOAuthConfig, code: str) -> dict[str, Any]:
     return value
 
 
+def verify_token_identity(token: str) -> dict[str, Any]:
+    """Ask Slack which workspace and user the newly issued token belongs to."""
+    connection = http.client.HTTPSConnection("slack.com", 443, timeout=10,
+                                              context=ssl.create_default_context())
+    try:
+        connection.request("POST", "/api/auth.test", body=b"", headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        })
+        response = connection.getresponse()
+        raw = response.read(MAX_RESPONSE + 1)
+        if response.status != 200 or len(raw) > MAX_RESPONSE:
+            raise SlackOAuthError("slack_oauth_identity_verification_failed", 502)
+        value = json.loads(raw)
+    except SlackOAuthError:
+        raise
+    except Exception:
+        raise SlackOAuthError("slack_oauth_identity_verification_failed", 502) from None
+    finally:
+        connection.close()
+    if not isinstance(value, dict) or value.get("ok") is not True:
+        raise SlackOAuthError("slack_oauth_identity_verification_failed", 502)
+    return value
+
+
 class SlackOAuthService:
     def __init__(self, config: SlackOAuthConfig, db: sqlite3.Connection,
                  lock: threading.RLock,
                  exchanger: Callable[[SlackOAuthConfig, str], dict[str, Any]] = exchange_code,
+                 identity_verifier: Callable[[str], dict[str, Any]] = verify_token_identity,
                  clock: Callable[[], float] = time.time):
         self.config = config
         self.store = SlackOAuthStore(db, lock, config)
         self.exchanger = exchanger
+        self.identity_verifier = identity_verifier
         self.clock = clock
 
     def _authorized_setup(self, request: Request) -> bool:
@@ -247,38 +315,65 @@ class SlackOAuthService:
             result = self.exchanger(self.config, code)
             team = result.get("team")
             user = result.get("authed_user")
-            if not isinstance(team, dict) or not isinstance(user, dict):
-                raise SlackOAuthError("slack_oauth_response_shape_mismatch", 403)
+            diagnostic = oauth_shape_diagnostic(result)
+            identity_shape_complete = (isinstance(team, dict)
+                                       and isinstance(team.get("id"), str)
+                                       and isinstance(user, dict)
+                                       and isinstance(user.get("id"), str))
             # oauth.v2.user.access documents token fields at the top level,
             # while oauth.v2.access places the user grant inside authed_user
             # (and may use the top level for a bot grant). Prefer the explicit
             # nested user grant when present, otherwise accept the user-centric
             # response shape. Identity/scope checks below remain identical.
-            nested_grant = "token_type" in user or "access_token" in user
+            nested_grant = (isinstance(user, dict)
+                            and ("token_type" in user or "access_token" in user))
             token_type = user.get("token_type") if nested_grant else result.get("token_type")
             token = user.get("access_token") if nested_grant else result.get("access_token")
             if token_type != "user":
                 raise SlackOAuthError("slack_oauth_token_type_mismatch", 403)
-            team_id = team.get("id")
-            user_id = user.get("id")
+            if not isinstance(token, str) or not USER_TOKEN.fullmatch(token):
+                raise SlackOAuthError("invalid_slack_user_token", 502)
+            scopes = user.get("scope", "") if isinstance(user, dict) else result.get("scope", "")
+            granted = frozenset(scopes.split(",")) if isinstance(scopes, str) else frozenset()
+            if granted != SLACK_SCOPES:
+                raise SlackOAuthError(
+                    "slack_oauth_scope_mismatch", 403,
+                    None if identity_shape_complete else diagnostic)
+            team_id = team.get("id") if isinstance(team, dict) else None
+            user_id = user.get("id") if isinstance(user, dict) else None
+            # Never ignore a supplied identity conflict while filling a missing
+            # field from auth.test.
+            if (isinstance(team_id, str)
+                    and not hmac.compare_digest(team_id, self.config.team_id)):
+                raise SlackOAuthError("slack_oauth_team_mismatch", 403)
+            if (isinstance(user_id, str)
+                    and not hmac.compare_digest(user_id, self.config.owner_user_id)):
+                raise SlackOAuthError("slack_oauth_owner_mismatch", 403)
+            if not isinstance(team_id, str) or not isinstance(user_id, str):
+                try:
+                    identity = self.identity_verifier(token)
+                except SlackOAuthError as error:
+                    raise SlackOAuthError(error.code, error.status, diagnostic) from None
+                team_id = identity.get("team_id")
+                user_id = identity.get("user_id")
+                if not isinstance(team_id, str) or not isinstance(user_id, str):
+                    raise SlackOAuthError(
+                        "slack_oauth_identity_verification_failed", 502, diagnostic)
             if (not isinstance(team_id, str)
                     or not hmac.compare_digest(team_id, self.config.team_id)):
                 raise SlackOAuthError("slack_oauth_team_mismatch", 403)
             if (not isinstance(user_id, str)
                     or not hmac.compare_digest(user_id, self.config.owner_user_id)):
                 raise SlackOAuthError("slack_oauth_owner_mismatch", 403)
-            scopes = user.get("scope", "")
-            granted = frozenset(scopes.split(",")) if isinstance(scopes, str) else frozenset()
-            if granted != SLACK_SCOPES:
-                raise SlackOAuthError("slack_oauth_scope_mismatch", 403)
-            if not isinstance(token, str) or not USER_TOKEN.fullmatch(token):
-                raise SlackOAuthError("invalid_slack_user_token", 502)
             self.store.save_installation(token, int(self.clock()))
             return JSONResponse({"status": "slack_oauth_connected"}, headers={
                 "Cache-Control": "no-store", "Pragma": "no-cache",
             })
         except SlackOAuthError as error:
-            return JSONResponse({"error": error.code}, status_code=error.status,
+            body: dict[str, Any] = {"error": error.code}
+            if error.diagnostic is not None:
+                body["diagnostic"] = error.diagnostic
+            return JSONResponse(body, status_code=error.status,
                                 headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
         except Exception:
             return JSONResponse({"error": "slack_oauth_internal_error"}, status_code=500,
