@@ -9,6 +9,7 @@ import unittest
 from stand.__main__ import fixture
 from stand.core import Stand, StandError
 from stand.telegram_live import (
+    ACK_TEXT,
     STATUS_TEXT,
     TelegramClient,
     TelegramLiveConfig,
@@ -110,6 +111,49 @@ class TelegramLiveTests(unittest.TestCase):
         self.stand = Stand(self.config.stand_config())
         restarted = TelegramWorker(self.config, self.stand, client)
         self.assertEqual(restarted.next_offset(), 1002)
+
+    def test_owner_message_gets_immediate_ack_once(self):
+        class FakeClient:
+            def __init__(self):
+                self.sent = []
+
+            def send_message(self, chat_id, text):
+                self.sent.append((chat_id, text))
+                return {"message_id": 1}
+
+        client = FakeClient()
+        worker = TelegramWorker(self.config, self.stand, client)
+        update = fixture()
+        update["message"]["text"] = "привет"
+
+        result = worker.process_update(update)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(client.sent, [(424242, ACK_TEXT)])
+
+        duplicate = worker.process_update(update)
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(client.sent, [(424242, ACK_TEXT)])
+
+    def test_uncertain_ack_is_not_retried_for_same_update(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def send_message(self, _chat_id, _text):
+                self.calls += 1
+                raise TelegramTransportError("telegram_request_failed")
+
+        client = FakeClient()
+        worker = TelegramWorker(self.config, self.stand, client)
+        update = fixture()
+        update["message"]["text"] = "привет"
+
+        with self.assertRaises(TelegramTransportError):
+            worker.process_update(update)
+        duplicate = worker.process_update(update)
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(worker.next_offset(), 1002)
 
     def test_non_owner_is_rejected_and_never_answered(self):
         class FakeClient:

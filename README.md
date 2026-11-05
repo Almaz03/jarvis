@@ -69,6 +69,7 @@ deploy job выключен переменной `DEPLOY_ENABLED`.
 - SQLite-транзакция сохраняет принятый update вместе с opaque `message_ref` и стабильным `event_id`. Дубликаты после рестарта и updates вне порядка безопасны. Отклонённые updates не сохраняются; polling offset здесь отсутствует.
 - Текст хранится как **untrusted data**; команды/URL не исполняются. Пересланные сообщения пока полностью отвергаются. В event preview только opaque ref, без текста; `read_message` возвращает текст явно как untrusted.
 - Live tool `reply_to_telegram_message(message_ref, text, idempotency_key)` проверяет Auth0 principal/scopes; recipient берётся из сохранённого inbox. Передать произвольный `chat_id` нельзя. Дубликат подавляется, конфликт ключа отклоняется, неопределённая отправка не повторяется вслепую.
+- Для каждого нового принятого сообщения владельца Telegram worker сразу отправляет служебное `Принял, отвечу позже`; повторный update не создаёт второе подтверждение. Это только квитанция ingress, а не ответ dot.
 - Фиктивный `MockPrincipal` проверяет scope/expiry/confirmed для unit-тестов. Это **не проверенная identity mapping и не OAuth**. Смена owner IDs на уже существующей БД запрещена.
 - У БД права `0600`, у каталога `0700`; симлинки запрещены. Локальные исходные тексты в БД не зашифрованы; это fixture storage, не безопасное хранилище production.
 - Offline-команды не имеют outbound HTTP-клиента. Отдельный live worker обращается только к фиксированным методам Telegram Bot API; произвольные callbacks по-прежнему запрещены.
