@@ -240,6 +240,34 @@ class SlackOAuthStore:
               (self.config.app_id, self.config.team_id, self.config.owner_user_id,
                scopes, ciphertext, now))
 
+    def load_installation_token(self) -> str:
+        """Decrypt the bound user token for an in-process Slack operation."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT app_id,team_id,owner_user_id,scopes,token_ciphertext "
+                "FROM slack_installation WHERE singleton=1").fetchone()
+        expected_scopes = ",".join(sorted(SLACK_SCOPES))
+        if (not row or row["app_id"] != self.config.app_id
+                or row["team_id"] != self.config.team_id
+                or row["owner_user_id"] != self.config.owner_user_id
+                or row["scopes"] != expected_scopes):
+            raise SlackOAuthError("slack_installation_not_available", 409)
+        try:
+            packed = base64.urlsafe_b64decode(row["token_ciphertext"].encode("ascii"))
+            if len(packed) < 29:
+                raise ValueError
+            nonce, encrypted = packed[:12], packed[12:]
+            aad = (f"slack-installation-v1|{self.config.team_id}|"
+                   f"{self.config.owner_user_id}").encode()
+            token = AESGCM(self.config.encryption_key).decrypt(nonce, encrypted, aad).decode()
+        except (ValueError, UnicodeError):
+            raise SlackOAuthError("slack_installation_decrypt_failed", 500) from None
+        except Exception:
+            raise SlackOAuthError("slack_installation_decrypt_failed", 500) from None
+        if not USER_TOKEN.fullmatch(token):
+            raise SlackOAuthError("slack_installation_token_invalid", 500)
+        return token
+
 
 def exchange_code(config: SlackOAuthConfig, code: str) -> dict[str, Any]:
     body = urlencode({"code": code, "redirect_uri": SLACK_REDIRECT_URI,

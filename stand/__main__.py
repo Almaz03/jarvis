@@ -95,7 +95,8 @@ def handler_for(stand):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("demo", "ingest", "serve", "telegram-poll"))
+    parser.add_argument("command", choices=(
+        "demo", "ingest", "serve", "telegram-poll", "slack-relay-test"))
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
     if args.command == "telegram-poll":
@@ -103,6 +104,25 @@ def main():
         live_config = TelegramLiveConfig.from_env()
         with Stand(live_config.stand_config()) as stand:
             TelegramWorker(live_config, stand, TelegramClient(live_config.token), emit=emit).run_forever()
+        return
+    if args.command == "slack-relay-test":
+        from .slack_relay import SlackRelayTestConfig, build_one_time_test
+        test_config = SlackRelayTestConfig.from_env(os.environ)
+        try:
+            owner_user_id = int(os.environ.get("TELEGRAM_OWNER_USER_ID", ""))
+            owner_chat_id = int(os.environ.get("TELEGRAM_OWNER_CHAT_ID", ""))
+        except ValueError:
+            raise StandError("explicit_positive_owner_ids_required") from None
+        stand_config = Config(
+            owner_user_id, owner_chat_id,
+            Path(os.environ.get("STAND_STATE_PATH", "/var/lib/jarvis/stand.sqlite3")),
+            mode="telegram", enable_live=True)
+        with Stand(stand_config) as stand:
+            result = build_one_time_test(
+                stand.db, stand.db_lock, test_config).run()
+            # The result is allowlist-only: fixed status, Slack timestamps and
+            # a duplicate-prevention boolean.  It never contains message text.
+            emit(result)
         return
     # Demo does not consume real identities or credentials. Reject credentials even here.
     if args.command == "demo":
