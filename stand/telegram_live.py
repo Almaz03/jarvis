@@ -29,7 +29,6 @@ STATUS_TEXT = (
     "Telegram ingress работает. Сообщения сохраняются в защищённый inbox. "
     "Связь с существующим dot через MCP Events ещё не подключена."
 )
-ACK_TEXT = "Принял, отвечу позже"
 
 
 @dataclass(frozen=True)
@@ -158,11 +157,6 @@ class TelegramWorker:
                 # At-most-once acknowledgement: ingress is committed before send. A timeout
                 # may lose this status reply, but a replay cannot duplicate it.
                 self.client.send_message(self.config.owner_chat_id, STATUS_TEXT)
-            else:
-                # Confirm receipt immediately while the dot's MCP Events task is queued.
-                # Ingress is committed first, so a replay after an uncertain send cannot
-                # produce another acknowledgement.
-                self.client.send_message(self.config.owner_chat_id, ACK_TEXT)
         self._advance(update_id)
         record = audit_record(result)
         self.emit(record)
