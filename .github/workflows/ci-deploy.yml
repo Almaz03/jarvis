@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_slack_relay_test:
+        description: Run the approved one-time owner DM relay test
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,6 +58,7 @@ jobs:
       SLACK_OWNER_USER_ID: ${{ secrets.SLACK_OWNER_USER_ID }}
       SLACK_OAUTH_SETUP_TOKEN: ${{ secrets.SLACK_OAUTH_SETUP_TOKEN }}
       SLACK_TOKEN_ENCRYPTION_KEY: ${{ secrets.SLACK_TOKEN_ENCRYPTION_KEY }}
+      RUN_SLACK_RELAY_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.run_slack_relay_test && 'true' || 'false' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -85,6 +92,10 @@ jobs:
             [[ "$SLACK_TOKEN_ENCRYPTION_KEY" =~ ^[A-Za-z0-9_-]{43}=$ ]]
           elif [ "$SLACK_OAUTH_ENABLED" != false ]; then
             echo "::error::SLACK_OAUTH_ENABLED must be true or false"
+            exit 1
+          fi
+          if [ "$RUN_SLACK_RELAY_TEST" != true ] && [ "$RUN_SLACK_RELAY_TEST" != false ]; then
+            echo "::error::RUN_SLACK_RELAY_TEST must be true or false"
             exit 1
           fi
           echo "VPS_PORT=$VPS_PORT" >> "$GITHUB_ENV"
@@ -139,9 +150,11 @@ jobs:
         run: |
           set -euo pipefail
           destination="${VPS_USER}@${VPS_HOST}"
-          ssh -p "$VPS_PORT" -i "$HOME/.ssh/id_ed25519" "$destination" "JARVIS_RELEASE_SHA='${GITHUB_SHA}' bash -s" <<'REMOTE'
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/id_ed25519" "$destination" \
+            "JARVIS_RELEASE_SHA='${GITHUB_SHA}' RUN_SLACK_RELAY_TEST='${RUN_SLACK_RELAY_TEST}' bash -s" <<'REMOTE'
           set -euo pipefail
           [[ "$JARVIS_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_SLACK_RELAY_TEST" = true || "$RUN_SLACK_RELAY_TEST" = false ]]
           root="$HOME/jarvis"
           release="$root/releases/$JARVIS_RELEASE_SHA"
           state="$root/state"
@@ -203,6 +216,38 @@ jobs:
               "${compose[@]}" logs --tail=100 --no-color mcp caddy
               exit 1
             fi
+          fi
+          if [ "$RUN_SLACK_RELAY_TEST" = true ]; then
+            # This ephemeral value is not persisted in .env. The command itself
+            # uses a durable DB marker and will not resend after an uncertain call.
+            relay_test_output="$(
+              "${compose[@]}" run --rm --no-TTY \
+                -e SLACK_RELAY_TEST_APPROVAL=relay-test-v1-approved \
+                telegram python -m stand slack-relay-test </dev/null
+            )"
+            RELAY_TEST_OUTPUT="$relay_test_output" python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          try:
+              value = json.loads(os.environ["RELAY_TEST_OUTPUT"])
+          except (KeyError, ValueError):
+              raise SystemExit("relay test returned an invalid safe result")
+          allowed = {"status", "slack_ts", "reply_ts", "duplicate_prevented"}
+          if set(value) - allowed:
+              raise SystemExit("relay test returned unexpected fields")
+          if value.get("status") not in {
+              "reply_verified", "sent_no_reply_yet", "send_uncertain"
+          }:
+              raise SystemExit("relay test returned an unexpected status")
+          timestamp = re.compile(r"^[0-9]{10,16}\.[0-9]{6}$")
+          for key in ("slack_ts", "reply_ts"):
+              if key in value and not timestamp.fullmatch(value[key]):
+                  raise SystemExit("relay test returned an invalid timestamp")
+          safe = {key: value[key] for key in sorted(value) if key in allowed}
+          print("SLACK_RELAY_TEST_RESULT=" + json.dumps(safe, separators=(",", ":")))
+          PY
           fi
           rm -f "$HOME/jarvis-release.tgz" "$HOME/jarvis-deploy.env"
           REMOTE
